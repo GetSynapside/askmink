@@ -1,0 +1,112 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background-color: #f8f9fb;
+    color: #111827;
+  }
+
+  :where(a:any-link, button, input, select, textarea):focus-visible {
+    outline: 2px solid #2563eb;
+    outline-offset: 2px;
+  }
+}
+
+.sidebar-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: #e5e7eb transparent;
+}
+
+@media (forced-colors: active) {
+  .nav-item[aria-current="page"] {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
+}
+
+input[type="checkbox"][switch] {
+  accent-color: #18181b;
+  cursor: pointer;
+}
+
+progress.askmink-progress {
+  appearance: none;
+  border: 0 solid;
+  overflow: clip;
+  border-radius: 9999px;
+  background: #e5e7eb;
+  block-size: 0.45rem;
+  inline-size: 100%;
+}
+
+progress.askmink-progress::-webkit-progress-bar {
+  background: transparent;
+}
+
+progress.askmink-progress::-webkit-progress-value {
+  background: #18181b;
+  border-radius: 9999px;
+  transition: inline-size 0.3s ease;
+}
+
+progress.askmink-progress::-moz-progress-bar {
+  background: #18181b;
+  border-radius: 9999px;
+  transition: inline-size 0.3s ease;
+}
+
+.wf-drag-handle {
+  cursor: grab;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.wf-drag-handle:active {
+  cursor: grabbing;
+}
+
+.wf-canvas {
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.visually-hidden:where(:not(:focus-within, :active)) {
+  position: absolute !important;
+  clip-path: inset(50%) !important;
+  overflow: hidden !important;
+  width: 1px !important;
+  height: 1px !important;
+  margin: -1px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  white-space: nowrap !important;
+}
+
+dialog:modal {
+  overscroll-behavior: contain;
+}
+
+dialog::backdrop {
+  background: rgba(15, 23, 42, 0.35);
+  backdrop-filter: blur(2px);
+  overflow: hidden;
+  overscroll-behavior: contain;
+}
+
+.mesh-banner {
+  background:
+    radial-gradient(at 15% 20%, rgba(251, 146, 60, 0.35) 0px, transparent 55%),
+    radial-gradient(at 85% 15%, rgba(192, 132, 252, 0.38) 0px, transparent 55%),
+    radial-gradient(at 55% 85%, rgba(96, 165, 250, 0.35) 0px, transparent 60%),
+    linear-gradient(135deg, #fff5f5 0%, #f5f3ff 50%, #eff6ff 100%);
+}
+
+.mesh-recap {
+  background:
+    radial-gradient(at 85% 20%, rgba(96, 165, 250, 0.32) 0px, transparent 55%),
+    radial-gradient(at 20% 80%, rgba(244, 114, 182, 0.2) 0px, transparent 55%),
+    #ffffff;
+}

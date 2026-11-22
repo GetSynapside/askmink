@@ -1,0 +1,62 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg18
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-askmink}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-askmink_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-askmink}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - askmink_pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-askmink} -d ${POSTGRES_DB:-askmink}"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      APP_MODE: ${APP_MODE:-self-hosted}
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3000
+      APP_URL: ${APP_URL:-http://localhost:3000}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-askmink}:${POSTGRES_PASSWORD:-askmink_dev_password}@postgres:5432/${POSTGRES_DB:-askmink}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?ENCRYPTION_KEY is required (64 hex chars)}
+      SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET is required (64 hex chars)}
+      STORAGE_DRIVER: ${STORAGE_DRIVER:-local}
+      UPLOAD_DIR: /data/uploads
+      AI_GATEWAY_API_KEY: ${AI_GATEWAY_API_KEY:-}
+      AI_GATEWAY_BASE_URL: ${AI_GATEWAY_BASE_URL:-https://ai-gateway.vercel.sh/v1}
+      DEFAULT_CHAT_MODEL: ${DEFAULT_CHAT_MODEL:-tencent/hy4-flash}
+      DEFAULT_EMBEDDING_MODEL: ${DEFAULT_EMBEDDING_MODEL:-alibaba/qwen3-embedding-0.6b}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_FROM:-Askmink <noreply@askmink.local>}
+      AUTH0_DOMAIN: ${AUTH0_DOMAIN:-}
+      AUTH0_CLIENT_ID: ${AUTH0_CLIENT_ID:-}
+      AUTH0_AUDIENCE: ${AUTH0_AUDIENCE:-}
+    ports:
+      - "${PORT:-3000}:3000"
+    volumes:
+      - askmink_uploads:/data/uploads
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  askmink_pgdata:
+  askmink_uploads:

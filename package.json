@@ -1,0 +1,25 @@
+{
+  "name": "askmink-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.12.1",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  },
+  "scripts": {
+    "dev": "pnpm --parallel --filter @askmink/api --filter @askmink/web --filter @askmink/widget dev",
+    "dev:api": "pnpm --filter @askmink/api dev",
+    "dev:web": "pnpm --filter @askmink/web dev",
+    "dev:widget": "pnpm --filter @askmink/widget dev",
+    "build": "pnpm --filter @askmink/shared build && pnpm --filter @askmink/db build && pnpm --filter @askmink/widget build && pnpm --filter @askmink/web build && pnpm --filter @askmink/api build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm --filter @askmink/api test",
+    "test:e2e": "pnpm --filter @askmink/api test:e2e",
+    "db:migrate": "pnpm --filter @askmink/db migrate"
+  }
+}

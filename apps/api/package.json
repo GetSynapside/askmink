@@ -1,0 +1,40 @@
+{
+  "name": "@askmink/api",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:e2e": "vitest run test/e2e"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^1.2.11",
+    "@ai-sdk/google": "^1.2.15",
+    "@ai-sdk/openai": "^1.3.22",
+    "@ai-sdk/openai-compatible": "^0.2.14",
+    "@askmink/db": "workspace:*",
+    "@askmink/shared": "workspace:*",
+    "@hono/node-server": "^1.14.1",
+    "ai": "^4.3.16",
+    "dotenv": "^16.5.0",
+    "drizzle-orm": "^0.41.0",
+    "hono": "^4.7.9",
+    "jose": "^6.0.11",
+    "nodemailer": "^6.10.1",
+    "pg": "^8.14.1",
+    "pg-boss": "^10.3.2",
+    "undici": "^7.8.0",
+    "unpdf": "^0.12.1",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "@types/nodemailer": "^6.4.17",
+    "@types/pg": "^8.11.11",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2",
+    "vitest": "^3.1.3"
+  }
+}

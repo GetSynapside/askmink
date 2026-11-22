@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Askmink External Widget Demo</title>
+    <style>
+      body { font-family: Inter, system-ui, sans-serif; margin: 0; padding: 48px; background: #F8F9FB; color: #111827; }
+      .card { max-width: 680px; margin: 0 auto; background: #FFF; border: 1px solid #EAECEF; border-radius: 16px; padding: 32px; }
+      button { padding: 8px 14px; border-radius: 8px; border: 1px solid #E5E7EB; background: #18181B; color: #FFF; cursor: pointer; margin-right: 8px; }
+      button.sec { background: #FFF; color: #111827; }
+      code { background: #F3F4F6; padding: 2px 6px; border-radius: 6px; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>Askmink — External Embed Demo</h1>
+      <p>Replace <code>AGENT_ID</code> in the script tag (or pass <code>?agent=YOUR_AGENT_ID</code> in the URL) to test the Shadow DOM widget on this host page.</p>
+      <div style="margin-top: 20px;">
+        <button onclick="window.Askmink?.open()">Open Widget</button>
+        <button class="sec" onclick="window.Askmink?.setContext({ plan: 'pro', page: 'pricing' })">Set Context</button>
+        <button class="sec" onclick="window.Askmink?.close()">Close</button>
+      </div>
+    </div>
+    <script>
+      const params = new URLSearchParams(window.location.search);
+      const agentId = params.get('agent') || 'AGENT_ID';
+      const api = params.get('api') || 'http://127.0.0.1:3000';
+      const s = document.createElement('script');
+      s.src = api + '/widget.js';
+      s.setAttribute('data-agent', agentId);
+      s.setAttribute('data-api', api);
+      document.body.appendChild(s);
+    </script>
+  </body>
+</html>

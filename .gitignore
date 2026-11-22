@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build outputs
+dist/
+build/
+*.tsbuildinfo
+
+# Environment & Secrets (NEVER commit secrets)
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+
+# Local uploads & runtime data
+data/
+uploads/
+
+# Logs & OS
+*.log
+.DS_Store
+Thumbs.db
+coverage/
