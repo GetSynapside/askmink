@@ -907,6 +907,19 @@ export function WebhooksView({ agent }: { agent: any }) {
   );
 }
 
+const PROVIDER_DEFAULT_MODELS: Record<string, { chat?: string; embedding?: string; baseUrl?: string }> = {
+  'vercel-ai-gateway': {
+    chat: 'tencent/hy4-flash',
+    embedding: 'alibaba/qwen3-embedding-0.6b',
+    baseUrl: 'https://ai-gateway.vercel.sh/v1',
+  },
+  openai: { chat: 'gpt-4o-mini', embedding: 'text-embedding-3-small', baseUrl: '' },
+  anthropic: { chat: 'claude-sonnet-4-20250514', baseUrl: '' },
+  google: { chat: 'gemini-2.5-flash', embedding: 'text-embedding-004', baseUrl: '' },
+  openrouter: { chat: 'openai/gpt-4o-mini', baseUrl: 'https://openrouter.ai/api/v1' },
+  'openai-compatible': { chat: '', embedding: '', baseUrl: '' },
+};
+
 export function SettingsByokView({
   agent,
   t,
@@ -924,10 +937,32 @@ export function SettingsByokView({
   const [label, setLabel] = useState('Vercel AI Gateway');
   const [apiKey, setApiKey] = useState('');
   const [baseUrl, setBaseUrl] = useState('https://ai-gateway.vercel.sh/v1');
+  const [bindToAgent, setBindToAgent] = useState(true);
+  const [chatProviderKeyId, setChatProviderKeyId] = useState<string>(agent.chatProviderKeyId || '');
+  const [embeddingProviderKeyId, setEmbeddingProviderKeyId] = useState<string>(
+    agent.embeddingProviderKeyId || ''
+  );
   const [chatModel, setChatModel] = useState(agent.chatModel);
   const [embeddingModel, setEmbeddingModel] = useState(agent.embeddingModel);
   const [domainsText, setDomainsText] = useState((agent.allowedDomains || []).join('\n'));
   const [notice, setNotice] = useState('');
+
+  useEffect(() => {
+    setChatProviderKeyId(agent.chatProviderKeyId || '');
+    setEmbeddingProviderKeyId(agent.embeddingProviderKeyId || '');
+    setChatModel(agent.chatModel);
+    setEmbeddingModel(agent.embeddingModel);
+    setDomainsText((agent.allowedDomains || []).join('\n'));
+  }, [agent.id, agent.chatProviderKeyId, agent.embeddingProviderKeyId, agent.chatModel, agent.embeddingModel, agent.allowedDomains]);
+
+  function handleProviderChange(nextProvider: string) {
+    setProvider(nextProvider);
+    const meta = PROVIDER_DEFAULT_MODELS[nextProvider];
+    setBaseUrl(meta?.baseUrl ?? '');
+    if (label === 'Vercel AI Gateway' || label.endsWith(' Key')) {
+      setLabel(`${nextProvider} Key`);
+    }
+  }
 
   async function refresh() {
     const r = await apiRequest('/api/provider-keys');
@@ -939,12 +974,40 @@ export function SettingsByokView({
 
   async function saveKey(e: React.FormEvent) {
     e.preventDefault();
-    await apiRequest('/api/provider-keys', {
+    const res = await apiRequest<{ item: { id: string } }>('/api/provider-keys', {
       method: 'POST',
       body: { provider, purpose, label, apiKey, baseUrl: baseUrl || undefined },
     });
     setApiKey('');
-    setNotice('Encrypted BYOK key stored (AES-256-GCM).');
+    const newKeyId = res.item?.id;
+    if (bindToAgent && newKeyId) {
+      const meta = PROVIDER_DEFAULT_MODELS[provider];
+      const patch: Record<string, unknown> =
+        purpose === 'chat'
+          ? {
+              chatProviderKeyId: newKeyId,
+              ...(meta?.chat ? { chatModel: meta.chat } : {}),
+            }
+          : {
+              embeddingProviderKeyId: newKeyId,
+              ...(meta?.embedding ? { embeddingModel: meta.embedding } : {}),
+            };
+      await apiRequest(`/api/agents/${agent.id}`, {
+        method: 'PATCH',
+        body: patch,
+      }).catch(() => undefined);
+      if (purpose === 'chat') {
+        setChatProviderKeyId(newKeyId);
+        if (meta?.chat) setChatModel(meta.chat);
+      } else {
+        setEmbeddingProviderKeyId(newKeyId);
+        if (meta?.embedding) setEmbeddingModel(meta.embedding);
+      }
+      onAgentUpdated();
+      setNotice('Encrypted BYOK key stored (AES-256-GCM) and assigned to this agent.');
+    } else {
+      setNotice('Encrypted BYOK key stored (AES-256-GCM).');
+    }
     refresh();
   }
 
@@ -953,6 +1016,8 @@ export function SettingsByokView({
       await apiRequest(`/api/agents/${agent.id}`, {
         method: 'PATCH',
         body: {
+          chatProviderKeyId: chatProviderKeyId || null,
+          embeddingProviderKeyId: embeddingProviderKeyId || null,
           chatModel,
           embeddingModel,
           allowedDomains: domainsText.split('\n').map((s: string) => s.trim()).filter(Boolean),
@@ -970,6 +1035,9 @@ export function SettingsByokView({
     }
   }
 
+  const chatKeys = keys.filter((k) => k.purpose === 'chat');
+  const embeddingKeys = keys.filter((k) => k.purpose === 'embedding');
+
   return (
     <div className="flex-1 overflow-y-auto p-6 space-y-6">
       <h2 className="text-lg font-semibold">BYOK Providers &amp; Agent Configuration</h2>
@@ -979,7 +1047,7 @@ export function SettingsByokView({
         <form onSubmit={saveKey} className="bg-white border border-[#EAECEF] rounded-xl p-4 space-y-3">
           <h3 className="text-sm font-semibold">Add BYOK Key (Chat &amp; Embedding Separated)</h3>
           <div className="grid grid-cols-2 gap-2">
-            <select value={provider} onChange={(e) => setProvider(e.target.value)} className="text-xs px-2.5 py-2 rounded-lg border border-[#E5E7EB]">
+            <select value={provider} onChange={(e) => handleProviderChange(e.target.value)} className="text-xs px-2.5 py-2 rounded-lg border border-[#E5E7EB]">
               <option value="vercel-ai-gateway">Vercel AI Gateway</option>
               <option value="openai">OpenAI</option>
               <option value="anthropic">Anthropic (Chat only)</option>
@@ -995,6 +1063,10 @@ export function SettingsByokView({
           <input required placeholder="Label" value={label} onChange={(e) => setLabel(e.target.value)} className="w-full text-xs px-3 py-2 rounded-lg border border-[#E5E7EB]" />
           <input required type="password" placeholder="API Key (stored encrypted, never shown again)" value={apiKey} onChange={(e) => setApiKey(e.target.value)} className="w-full text-xs px-3 py-2 rounded-lg border border-[#E5E7EB]" />
           <input placeholder="Optional Base URL" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} className="w-full text-xs px-3 py-2 rounded-lg border border-[#E5E7EB]" />
+          <label className="flex items-center gap-2 text-xs text-[#4B5563] cursor-pointer">
+            <input type="checkbox" checked={bindToAgent} onChange={(e) => setBindToAgent(e.target.checked)} className="rounded" />
+            <span>Assign this key to the active agent</span>
+          </label>
           <button className="px-4 py-2 rounded-lg bg-[#18181B] text-white text-xs font-medium">
             Encrypt &amp; Save Key
           </button>
@@ -1022,6 +1094,38 @@ export function SettingsByokView({
 
         <div className="bg-white border border-[#EAECEF] rounded-xl p-4 space-y-3">
           <h3 className="text-sm font-semibold">Models &amp; Allowed Domains</h3>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <div>
+              <label className="block text-[11px] text-[#6B7280] mb-1">Active Chat Key</label>
+              <select
+                value={chatProviderKeyId}
+                onChange={(e) => setChatProviderKeyId(e.target.value)}
+                className="w-full text-xs px-2.5 py-2 rounded-lg border border-[#E5E7EB] bg-white"
+              >
+                <option value="">None (server default if configured)</option>
+                {chatKeys.map((k) => (
+                  <option key={k.id} value={k.id}>
+                    {k.label} ({k.provider} ••••{k.keyLast4})
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-[11px] text-[#6B7280] mb-1">Active Embedding Key</label>
+              <select
+                value={embeddingProviderKeyId}
+                onChange={(e) => setEmbeddingProviderKeyId(e.target.value)}
+                className="w-full text-xs px-2.5 py-2 rounded-lg border border-[#E5E7EB] bg-white"
+              >
+                <option value="">None (server default if configured)</option>
+                {embeddingKeys.map((k) => (
+                  <option key={k.id} value={k.id}>
+                    {k.label} ({k.provider} ••••{k.keyLast4})
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
           <div>
             <label className="block text-[11px] text-[#6B7280] mb-1">Chat Model</label>
             <input value={chatModel} onChange={(e) => setChatModel(e.target.value)} className="w-full text-xs font-mono px-3 py-2 rounded-lg border border-[#E5E7EB]" />

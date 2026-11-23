@@ -255,9 +255,18 @@ describe('Askmink MVP E2E Suite (Real PostgreSQL 18 + pgvector + pg-boss + Hono)
     const widgetJwtSecret: string = agentRes.data.widgetJwtSecretOnce;
     expect(widgetJwtSecret.length).toBeGreaterThan(20);
 
-    // Tenant isolation: Bob cannot read Alice's agent
+    // Tenant isolation: Bob cannot read Alice's agent or bind Alice's provider key
     const bobRead = await bob.fetchJson(`/api/agents/${agentId}`);
     expect(bobRead.status).toBe(404);
+
+    const bobCrossKey = await bob.fetchJson('/api/agents', {
+      method: 'POST',
+      body: {
+        name: 'Bob Unauthorized Key Agent',
+        chatProviderKeyId: keyRes.data.item.id,
+      },
+    });
+    expect(bobCrossKey.status).toBe(400);
 
     // 5. Upload Security (forged PDF magic bytes rejected, real Markdown accepted)
     const fakePdfForm = new FormData();
@@ -500,17 +509,42 @@ describe('Askmink MVP E2E Suite (Real PostgreSQL 18 + pgvector + pg-boss + Hono)
     expect(receivedToolCalls[0]!.url).not.toContain('attacker-spoofed-999');
     expect(receivedToolCalls[0]!.headers['x-session-user']).toBe('real-alice-123');
 
-    // 10. Strict Dynamic CORS on Widget API
+    // 10. Strict Dynamic CORS on Widget API (including OPTIONS preflight)
     const evilOrigin = await fetch(`${baseUrl}/api/widget/${agentId}/config`, {
       headers: { Origin: 'https://evil.attacker.example' },
     });
     expect(evilOrigin.status).toBe(403);
+
+    const evilPreflight = await fetch(`${baseUrl}/api/widget/${agentId}/chat`, {
+      method: 'OPTIONS',
+      headers: {
+        Origin: 'https://evil.attacker.example',
+        'Access-Control-Request-Method': 'POST',
+      },
+    });
+    expect(evilPreflight.status).toBe(403);
 
     const goodOrigin = await fetch(`${baseUrl}/api/widget/${agentId}/config`, {
       headers: { Origin: 'https://allowed.askmink.test' },
     });
     expect(goodOrigin.status).toBe(200);
     expect(goodOrigin.headers.get('access-control-allow-origin')).toBe('https://allowed.askmink.test');
+
+    const goodPreflight = await fetch(`${baseUrl}/api/widget/${agentId}/chat`, {
+      method: 'OPTIONS',
+      headers: {
+        Origin: 'https://allowed.askmink.test',
+        'Access-Control-Request-Method': 'POST',
+        'Access-Control-Request-Headers': 'Content-Type',
+      },
+    });
+    expect(goodPreflight.status).toBe(204);
+    expect(goodPreflight.headers.get('access-control-allow-origin')).toBe('https://allowed.askmink.test');
+    expect(goodPreflight.headers.get('access-control-allow-methods')).toContain('POST');
+
+    const widgetJsRes = await fetch(`${baseUrl}/widget.js`);
+    expect(widgetJsRes.status).toBe(200);
+    expect(widgetJsRes.headers.get('access-control-allow-origin')).toBe('*');
 
     // 11. Built widget.js gzipped size check (< 30 KB)
     const widgetPath = path.resolve(process.cwd(), '../widget/dist/widget.js');

@@ -107,7 +107,10 @@ export class AgentOrchestrator {
   private async resolveChatCredentials(agent: typeof agents.$inferSelect): Promise<ResolvedProviderCredentials> {
     if (agent.chatProviderKeyId) {
       const keyRow = await this.db.query.providerKeys.findFirst({
-        where: eq(providerKeys.id, agent.chatProviderKeyId),
+        where: and(
+          eq(providerKeys.id, agent.chatProviderKeyId),
+          eq(providerKeys.workspaceId, agent.workspaceId)
+        ),
       });
       if (keyRow) {
         return {

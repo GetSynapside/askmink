@@ -258,11 +258,29 @@ export function registerRoutes(app: Hono, deps: RouteDeps): void {
     });
   });
 
+  async function validateWorkspaceKeyRef(
+    keyId: string | null | undefined,
+    workspaceId: string
+  ): Promise<boolean> {
+    if (!keyId) return true;
+    const row = await db.query.providerKeys.findFirst({
+      where: and(eq(providerKeys.id, keyId), eq(providerKeys.workspaceId, workspaceId)),
+    });
+    return Boolean(row);
+  }
+
   admin.post('/agents', async (c) => {
     const { workspaceId } = c.get('authUser');
     const parsed = CreateAgentSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) {
       return c.json({ error: 'Validation failed', details: parsed.error.flatten() }, 400);
+    }
+    const [chatKeyOk, embKeyOk] = await Promise.all([
+      validateWorkspaceKeyRef(parsed.data.chatProviderKeyId, workspaceId),
+      validateWorkspaceKeyRef(parsed.data.embeddingProviderKeyId, workspaceId),
+    ]);
+    if (!chatKeyOk || !embKeyOk) {
+      return c.json({ error: 'Provider key not found in workspace' }, 400);
     }
     const widgetJwtSecret = generateRandomToken(32);
     const [created] = await db
@@ -293,6 +311,13 @@ export function registerRoutes(app: Hono, deps: RouteDeps): void {
     const parsed = UpdateAgentSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) {
       return c.json({ error: 'Validation failed', details: parsed.error.flatten() }, 400);
+    }
+    const [chatKeyOk, embKeyOk] = await Promise.all([
+      validateWorkspaceKeyRef(parsed.data.chatProviderKeyId, workspaceId),
+      validateWorkspaceKeyRef(parsed.data.embeddingProviderKeyId, workspaceId),
+    ]);
+    if (!chatKeyOk || !embKeyOk) {
+      return c.json({ error: 'Provider key not found in workspace' }, 400);
     }
     const existing = await db.query.agents.findFirst({
       where: and(eq(agents.id, agentId), eq(agents.workspaceId, workspaceId)),

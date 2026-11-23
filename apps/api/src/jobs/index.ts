@@ -136,7 +136,10 @@ export class JobRunner {
 
     if (agent.embeddingProviderKeyId) {
       const keyRow = await this.db.query.providerKeys.findFirst({
-        where: eq(providerKeys.id, agent.embeddingProviderKeyId),
+        where: and(
+          eq(providerKeys.id, agent.embeddingProviderKeyId),
+          eq(providerKeys.workspaceId, agent.workspaceId)
+        ),
       });
       if (keyRow) {
         return {

@@ -41,6 +41,46 @@ interface AgentOnboardingFlowProps {
 
 const COLOR_PRESETS = ['#2563EB', '#18181B', '#4F46E5', '#059669', '#E11D48', '#D97706'];
 
+const PROVIDER_DEFAULTS: Record<
+  string,
+  { chatModel: string; embeddingModel?: string; supportsEmbedding: boolean }
+> = {
+  'vercel-ai-gateway': {
+    chatModel: 'tencent/hy4-flash',
+    embeddingModel: 'alibaba/qwen3-embedding-0.6b',
+    supportsEmbedding: true,
+  },
+  openai: {
+    chatModel: 'gpt-4o-mini',
+    embeddingModel: 'text-embedding-3-small',
+    supportsEmbedding: true,
+  },
+  anthropic: {
+    chatModel: 'claude-sonnet-4-20250514',
+    supportsEmbedding: false,
+  },
+  google: {
+    chatModel: 'gemini-2.5-flash',
+    embeddingModel: 'text-embedding-004',
+    supportsEmbedding: true,
+  },
+  openrouter: {
+    chatModel: 'openai/gpt-4o-mini',
+    supportsEmbedding: false,
+  },
+};
+
+function defaultDomainsForHost(): string {
+  if (typeof window === 'undefined') {
+    return 'http://127.0.0.1:5173\nhttp://localhost:5173\nhttp://127.0.0.1:3000';
+  }
+  const origin = window.location.origin;
+  const isLocal = origin.includes('127.0.0.1') || origin.includes('localhost');
+  return isLocal
+    ? `${origin}\nhttp://127.0.0.1:5173\nhttp://localhost:5173\nhttp://127.0.0.1:3000`
+    : origin;
+}
+
 export function AgentOnboardingFlow({
   mode,
   open = true,
@@ -71,8 +111,14 @@ export function AgentOnboardingFlow({
   const [knowledgeText, setKnowledgeText] = useState('');
 
   // Step 4: AI Provider + Widget + Domains
-  const [aiReady, setAiReady] = useState<{ gateway: boolean; keyCount: number; defaultModel: string }>({
-    gateway: true,
+  const [aiReady, setAiReady] = useState<{
+    gateway: boolean;
+    keyCount: number;
+    defaultModel: string;
+    existingChatKeyId?: string;
+    existingEmbeddingKeyId?: string;
+  }>({
+    gateway: false,
     keyCount: 0,
     defaultModel: 'tencent/hy4-flash',
   });
@@ -82,9 +128,7 @@ export function AgentOnboardingFlow({
   const [byokApiKey, setByokApiKey] = useState('');
   const [primaryColor, setPrimaryColor] = useState('#2563EB');
   const [showBranding, setShowBranding] = useState(true);
-  const [domainsText, setDomainsText] = useState(
-    'http://127.0.0.1:5173\nhttp://localhost:5173\nhttp://127.0.0.1:3000'
-  );
+  const [domainsText, setDomainsText] = useState(defaultDomainsForHost);
 
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState('');
@@ -108,6 +152,7 @@ export function AgentOnboardingFlow({
     setKnowledgeText('');
     setPrimaryColor(initial.primaryColor);
     setShowBranding(true);
+    setDomainsText(defaultDomainsForHost());
     setByokApiKey('');
     setError('');
 
@@ -118,11 +163,16 @@ export function AgentOnboardingFlow({
       apiRequest<{ items: any[] }>('/api/provider-keys').catch(() => ({ items: [] })),
     ]).then(([health, keys]) => {
       const gateway = Boolean(health?.defaults?.gatewayConfigured);
-      const keyCount = (keys?.items || []).length;
+      const keyItems = keys?.items || [];
+      const keyCount = keyItems.length;
+      const existingChatKeyId = keyItems.find((k) => k.purpose === 'chat')?.id;
+      const existingEmbeddingKeyId = keyItems.find((k) => k.purpose === 'embedding')?.id;
       setAiReady({
         gateway,
         keyCount,
         defaultModel: health?.defaults?.chatModel || 'tencent/hy4-flash',
+        existingChatKeyId,
+        existingEmbeddingKeyId,
       });
       setShowByokForm(!gateway && keyCount === 0);
     });
@@ -165,19 +215,36 @@ export function AgentOnboardingFlow({
     setCreating(true);
     setError('');
     try {
-      // 1. Optional BYOK key creation first
-      let createdKeyId: string | undefined;
-      if (byokApiKey.trim().length > 0) {
+      // 1. Optional BYOK key creation first (auto-creates matching embedding key when supported)
+      let createdChatKeyId: string | undefined;
+      let createdEmbeddingKeyId: string | undefined;
+      const providerMeta = PROVIDER_DEFAULTS[byokProvider];
+      const trimmedKey = byokApiKey.trim();
+
+      if (trimmedKey.length > 0) {
         const keyRes = await apiRequest<{ item: { id: string } }>('/api/provider-keys', {
           method: 'POST',
           body: {
             provider: byokProvider,
             purpose: 'chat',
             label: byokLabel.trim() || 'Primary Chat Key',
-            apiKey: byokApiKey.trim(),
+            apiKey: trimmedKey,
           },
         });
-        createdKeyId = keyRes.item?.id;
+        createdChatKeyId = keyRes.item?.id;
+
+        if (providerMeta?.supportsEmbedding) {
+          const embRes = await apiRequest<{ item: { id: string } }>('/api/provider-keys', {
+            method: 'POST',
+            body: {
+              provider: byokProvider,
+              purpose: 'embedding',
+              label: `${byokLabel.trim() || 'Primary'} (Embedding)`,
+              apiKey: trimmedKey,
+            },
+          });
+          createdEmbeddingKeyId = embRes.item?.id;
+        }
       }
 
       // 2. Create the agent with compiled Mermaid workflow
@@ -190,6 +257,8 @@ export function AgentOnboardingFlow({
         .split('\n')
         .map((d) => d.trim())
         .filter(Boolean);
+      const fallbackOrigin =
+        typeof window !== 'undefined' ? window.location.origin : 'http://127.0.0.1:3000';
 
       const res = await apiRequest<{ item: any }>('/api/agents', {
         method: 'POST',
@@ -200,9 +269,13 @@ export function AgentOnboardingFlow({
           systemPrompt: compiledPrompt,
           primaryColor: validHex,
           showBranding,
-          chatProviderKeyId: createdKeyId ?? null,
-          allowedDomains:
-            allowedDomains.length > 0 ? allowedDomains : ['http://127.0.0.1:3000'],
+          chatProviderKeyId: createdChatKeyId ?? aiReady.existingChatKeyId ?? null,
+          embeddingProviderKeyId: createdEmbeddingKeyId ?? aiReady.existingEmbeddingKeyId ?? null,
+          ...(createdChatKeyId && providerMeta?.chatModel ? { chatModel: providerMeta.chatModel } : {}),
+          ...(createdEmbeddingKeyId && providerMeta?.embeddingModel
+            ? { embeddingModel: providerMeta.embeddingModel }
+            : {}),
+          allowedDomains: allowedDomains.length > 0 ? allowedDomains : [fallbackOrigin],
         },
       });
 

@@ -39,18 +39,22 @@ export async function createAskminkApp(config: AppConfig): Promise<AskminkAppCon
   app.use('*', securityHeadersMiddleware());
 
   // Strict CORS for Admin SPA (dev Vite server or configured origin, never wildcard *)
+  // Widget API (/api/widget/*) enforces per-agent allowedDomains CORS in routes/index.ts.
   const allowedAdminOrigins = new Set(
     [config.appUrl, config.corsOrigin, 'http://127.0.0.1:5173', 'http://localhost:5173'].filter(Boolean)
   );
-  app.use(
-    '/api/*',
-    cors({
-      origin: (origin) => (origin && allowedAdminOrigins.has(origin) ? origin : ''),
-      credentials: true,
-      allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-      allowHeaders: ['Content-Type', 'X-CSRF-Token', 'Authorization'],
-    })
-  );
+  const adminCors = cors({
+    origin: (origin) => (origin && allowedAdminOrigins.has(origin) ? origin : ''),
+    credentials: true,
+    allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowHeaders: ['Content-Type', 'X-CSRF-Token', 'Authorization'],
+  });
+  app.use('/api/*', async (c, next) => {
+    if (c.req.path.startsWith('/api/widget/')) {
+      return next();
+    }
+    return adminCors(c, next);
+  });
 
   // CSRF protection on all state-changing routes (excluding /api/widget/*)
   app.use('/api/*', csrfMiddleware());
@@ -65,6 +69,7 @@ export async function createAskminkApp(config: AppConfig): Promise<AskminkAppCon
 
   // Serve compiled widget bundle (/widget.js) with permissive GET CORS for third-party embeds
   const widgetDistCandidates = [
+    path.resolve(process.cwd(), 'apps/api/public/widget/widget.js'),
     path.resolve(process.cwd(), 'public/widget/widget.js'),
     path.resolve(process.cwd(), '../widget/dist/widget.js'),
     path.resolve(process.cwd(), 'apps/widget/dist/widget.js'),
@@ -76,12 +81,15 @@ export async function createAskminkApp(config: AppConfig): Promise<AskminkAppCon
     }
     const content = fs.readFileSync(found, 'utf8');
     c.header('Content-Type', 'application/javascript; charset=utf-8');
+    c.header('Access-Control-Allow-Origin', '*');
+    c.header('Cross-Origin-Resource-Policy', 'cross-origin');
     c.header('Cache-Control', 'public, max-age=300');
     return c.body(content);
   });
 
   // Serve built Admin SPA in production
   const webDistDir = [
+    path.resolve(process.cwd(), 'apps/api/public/web'),
     path.resolve(process.cwd(), 'public/web'),
     path.resolve(process.cwd(), '../web/dist'),
   ].find((d) => fs.existsSync(path.join(d, 'index.html')));
@@ -93,22 +101,33 @@ export async function createAskminkApp(config: AppConfig): Promise<AskminkAppCon
       }
       const reqRel = c.req.path === '/' ? 'index.html' : c.req.path.replace(/^\/+/, '');
       const resolved = path.resolve(webDistDir, reqRel);
-      const target =
-        resolved.startsWith(webDistDir + path.sep) && fs.existsSync(resolved) && fs.statSync(resolved).isFile()
-          ? resolved
-          : path.join(webDistDir, 'index.html');
+      const isStaticFile =
+        resolved.startsWith(webDistDir + path.sep) && fs.existsSync(resolved) && fs.statSync(resolved).isFile();
+      const target = isStaticFile ? resolved : path.join(webDistDir, 'index.html');
 
       const ext = path.extname(target);
       const mimeMap: Record<string, string> = {
         '.html': 'text/html; charset=utf-8',
         '.js': 'application/javascript; charset=utf-8',
+        '.mjs': 'application/javascript; charset=utf-8',
         '.css': 'text/css; charset=utf-8',
         '.svg': 'image/svg+xml',
         '.png': 'image/png',
         '.jpg': 'image/jpeg',
+        '.webp': 'image/webp',
+        '.ico': 'image/x-icon',
+        '.woff2': 'font/woff2',
+        '.woff': 'font/woff',
+        '.txt': 'text/plain; charset=utf-8',
         '.json': 'application/json',
+        '.map': 'application/json',
       };
       c.header('Content-Type', mimeMap[ext] ?? 'application/octet-stream');
+      if (isStaticFile && reqRel.startsWith('assets/')) {
+        c.header('Cache-Control', 'public, max-age=31536000, immutable');
+      } else if (ext === '.html') {
+        c.header('Cache-Control', 'no-cache');
+      }
       return c.body(fs.readFileSync(target));
     });
   }
