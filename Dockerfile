@@ -26,7 +26,10 @@ ENV HOST=0.0.0.0
 ENV PORT=3000
 WORKDIR /app
 
-RUN groupadd -r askmink && useradd -r -g askmink askmink \
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends curl ca-certificates \
+  && rm -rf /var/lib/apt/lists/* \
+  && groupadd -r askmink && useradd -r -g askmink askmink \
   && mkdir -p /data/uploads \
   && chown -R askmink:askmink /data/uploads
 
