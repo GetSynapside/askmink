@@ -18,7 +18,13 @@ import {
   Wrench,
 } from 'lucide-react';
 import type { SupportedLanguage } from '@askmink/shared';
-import { apiRequest } from '../lib/api';
+import { apiRequest } from '@/lib/api';
+import { cn } from '@/lib/utils';
+import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card } from '@/components/ui/card';
+import { Progress } from '@/components/ui/progress';
 
 interface OverviewViewProps {
   agent: any;
@@ -45,7 +51,12 @@ export function OverviewView({
 }: OverviewViewProps) {
   const [recentConversations, setRecentConversations] = useState<any[]>([]);
   const [recentLeads, setRecentLeads] = useState<any[]>([]);
-  const [aiStatus, setAiStatus] = useState({ gateway: false, keys: 0 });
+  const [aiStatus, setAiStatus] = useState({
+    gateway: false,
+    keys: 0,
+    chatModel: agent.chatModel,
+    embeddingModel: agent.embeddingModel,
+  });
   const [checklistHidden, setChecklistHidden] = useState<boolean>(() => {
     try {
       return localStorage.getItem(`askmink_checklist_hidden_${agent.id}`) === '1';
@@ -71,14 +82,19 @@ export function OverviewView({
       fetch('/health')
         .then((r) => (r.ok ? r.json() : null))
         .catch(() => null),
-      apiRequest<{ items: any[] }>('/api/provider-keys').catch(() => ({ items: [] })),
-    ]).then(([convs, leadsRes, health, keysRes]) => {
+      apiRequest<{ settings: any; keys: any[] }>('/api/account/ai-settings').catch(() => ({
+        settings: null,
+        keys: [],
+      })),
+    ]).then(([convs, leadsRes, health, aiRes]) => {
       if (cancelled) return;
       setRecentConversations((convs.items || []).slice(0, 4));
       setRecentLeads((leadsRes.items || []).slice(0, 4));
       setAiStatus({
-        gateway: Boolean(health?.defaults?.gatewayConfigured),
-        keys: (keysRes.items || []).length,
+        gateway: Boolean(health?.defaults?.gatewayConfigured || aiRes?.settings?.gatewayConfigured),
+        keys: (aiRes?.keys || []).length,
+        chatModel: aiRes?.settings?.chatModel || agent.chatModel,
+        embeddingModel: aiRes?.settings?.embeddingModel || agent.embeddingModel,
       });
     });
     return () => {
@@ -115,14 +131,14 @@ export function OverviewView({
       label: t.checkItemAgent,
       cta: t.checkItemAgentCta,
       done: Boolean(agent.systemPrompt && agent.systemPrompt.trim().length > 0),
-      onClick: () => onNavigate('behavior'),
+      onClick: () => onNavigate('workflow'),
     },
     {
       id: 'ai',
       label: t.checkItemAi,
       cta: t.checkItemAiCta,
       done: aiStatus.gateway || aiStatus.keys > 0,
-      onClick: () => onNavigate('settings'),
+      onClick: () => onNavigate('account/byok'),
     },
     {
       id: 'knowledge',
@@ -154,6 +170,7 @@ export function OverviewView({
     },
   ];
   const checklistDoneCount = checklistItems.filter((i) => i.done).length;
+  const checklistProgressPct = Math.round((checklistDoneCount / checklistItems.length) * 100);
 
   function toggleChecklistHidden(next: boolean) {
     setChecklistHidden(next);
@@ -174,78 +191,67 @@ export function OverviewView({
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div className="min-w-0">
               <div className="flex items-center gap-2.5 flex-wrap">
-                <h1 className="text-xl font-semibold text-[#111827] tracking-tight truncate">
+                <h1 className="text-xl font-semibold text-foreground tracking-tight truncate">
                   {agent.name}
                 </h1>
-                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#ECFDF5] text-[#047857] border border-[#D1FAE5] text-[11px] font-medium">
-                  <span className="w-1.5 h-1.5 rounded-full bg-[#10B981]" aria-hidden="true" />
+                <Badge variant="success" className="gap-1.5">
+                  <span className="size-1.5 rounded-full bg-emerald-500" aria-hidden="true" />
                   {t.online}
-                </span>
+                </Badge>
               </div>
-              <p className="text-xs text-[#6B7280] mt-1">{t.overviewSubtitle}</p>
+              <p className="text-xs text-muted-foreground mt-1">{t.overviewSubtitle}</p>
             </div>
 
             <div className="flex items-center gap-2 shrink-0 flex-wrap">
               {checklistHidden && checklistDoneCount < checklistItems.length && (
-                <button
+                <Button
                   type="button"
+                  variant="outline"
                   onClick={() => toggleChecklistHidden(false)}
-                  className="px-3 py-2 rounded-lg bg-white border border-[#E5E7EB] hover:bg-[#F9FAFB] text-xs font-medium text-[#374151] transition"
                 >
                   {t.checklistShow} ({checklistDoneCount}/{checklistItems.length})
-                </button>
+                </Button>
               )}
-              <button
-                type="button"
-                onClick={() => onNavigate('widget')}
-                className="px-3 py-2 rounded-lg bg-white border border-[#E5E7EB] hover:bg-[#F9FAFB] text-xs font-medium text-[#111827] inline-flex items-center gap-1.5 transition"
-              >
-                <Paintbrush className="w-3.5 h-3.5 text-[#4B5563]" aria-hidden="true" />
+              <Button type="button" variant="outline" onClick={() => onNavigate('widget')}>
+                <Paintbrush className="size-3.5 text-muted-foreground" aria-hidden="true" />
                 <span>{t.customizeWidget}</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => onNavigate('playground')}
-                className="px-3 py-2 rounded-lg bg-[#18181B] hover:bg-[#27272A] text-white text-xs font-medium inline-flex items-center gap-1.5 transition"
-              >
-                <Sparkles className="w-3.5 h-3.5" aria-hidden="true" />
+              </Button>
+              <Button type="button" onClick={() => onNavigate('playground')}>
+                <Sparkles className="size-3.5" aria-hidden="true" />
                 <span>{t.openPlayground}</span>
-              </button>
+              </Button>
             </div>
           </div>
 
           {/* Interactive Launch Checklist */}
           {!checklistHidden && (
-            <section className="bg-white border border-[#EAECEF] rounded-xl p-5 space-y-4">
+            <Card className="p-5 space-y-4">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                 <div>
                   <div className="flex items-center gap-2">
-                    <h2 className="text-sm font-semibold text-[#111827]">{t.checklistTitle}</h2>
-                    <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-[#F3F4F6] text-[#374151] tabular-nums">
+                    <h2 className="text-sm font-semibold text-foreground">{t.checklistTitle}</h2>
+                    <Badge variant="secondary" className="tabular-nums">
                       {checklistDoneCount}/{checklistItems.length} {t.checklistCompleted}
-                    </span>
+                    </Badge>
                   </div>
-                  <p className="text-xs text-[#6B7280] mt-0.5">
+                  <p className="text-xs text-muted-foreground mt-0.5">
                     {checklistDoneCount === checklistItems.length
                       ? t.checklistAllDone
                       : t.checklistSubtitle}
                   </p>
                 </div>
-                <button
+                <Button
                   type="button"
+                  variant="ghost"
+                  size="xs"
                   onClick={() => toggleChecklistHidden(true)}
-                  className="text-xs text-[#6B7280] hover:text-[#111827] self-start sm:self-center"
+                  className="text-muted-foreground self-start sm:self-center"
                 >
                   {t.checklistDismiss}
-                </button>
+                </Button>
               </div>
 
-              <progress
-                className="askmink-progress"
-                value={checklistDoneCount}
-                max={checklistItems.length}
-                aria-label={t.checklistTitle}
-              />
+              <Progress value={checklistProgressPct} aria-label={t.checklistTitle} />
 
               <ul className="grid grid-cols-1 md:grid-cols-2 gap-2">
                 {checklistItems.map((item) => (
@@ -253,41 +259,44 @@ export function OverviewView({
                     <button
                       type="button"
                       onClick={item.onClick}
-                      className={`w-full px-3 py-2.5 rounded-lg border text-left flex items-center justify-between gap-2.5 transition ${
+                      className={cn(
+                        'w-full px-3 py-2.5 rounded-lg border text-left flex items-center justify-between gap-2.5 transition cursor-pointer',
                         item.done
-                          ? 'bg-[#FAFAFB] border-[#F3F4F6] hover:border-[#E5E7EB]'
-                          : 'bg-white border-[#EAECEF] hover:border-[#18181B]'
-                      }`}
+                          ? 'bg-muted/40 border-border/70 hover:border-border'
+                          : 'bg-card border-border hover:border-primary'
+                      )}
                     >
                       <span className="flex items-center gap-2.5 min-w-0">
                         <span
-                          className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 ${
+                          className={cn(
+                            'size-5 rounded-full flex items-center justify-center shrink-0',
                             item.done
-                              ? 'bg-[#10B981] text-white'
-                              : 'border-2 border-[#D1D5DB] bg-white'
-                          }`}
+                              ? 'bg-emerald-500 text-white'
+                              : 'border-2 border-border bg-background'
+                          )}
                           aria-hidden="true"
                         >
-                          {item.done && <Check className="w-3 h-3" />}
+                          {item.done && <Check className="size-3" />}
                         </span>
                         <span
-                          className={`text-xs truncate ${
+                          className={cn(
+                            'text-xs truncate',
                             item.done
-                              ? 'text-[#6B7280] line-through'
-                              : 'text-[#111827] font-medium'
-                          }`}
+                              ? 'text-muted-foreground line-through'
+                              : 'text-foreground font-medium'
+                          )}
                         >
                           {item.label}
                         </span>
                       </span>
-                      <span className="text-[11px] font-medium text-[#2563EB] shrink-0">
+                      <span className="text-[11px] font-medium text-blue-600 shrink-0">
                         {item.cta}
                       </span>
                     </button>
                   </li>
                 ))}
               </ul>
-            </section>
+            </Card>
           )}
 
           {/* 4-Column Operational KPI Grid */}
@@ -299,7 +308,7 @@ export function OverviewView({
                 value: kpis.conversations,
                 sub: `${usage.turns.toLocaleString(locale)} ${t.turnsMetered}`,
                 icon: MessageSquare,
-                iconClass: 'bg-[#EFF6FF] text-[#2563EB]',
+                iconClass: 'bg-blue-50 text-blue-600',
               },
               {
                 id: 'tickets',
@@ -307,7 +316,7 @@ export function OverviewView({
                 value: kpis.openTickets,
                 sub: t.linkedToInbox,
                 icon: LifeBuoy,
-                iconClass: 'bg-[#FEF2F2] text-[#DC2626]',
+                iconClass: 'bg-red-50 text-red-600',
               },
               {
                 id: 'schedule',
@@ -315,7 +324,7 @@ export function OverviewView({
                 value: kpis.bookings,
                 sub: t.confirmedMeetings,
                 icon: Calendar,
-                iconClass: 'bg-[#ECFDF5] text-[#059669]',
+                iconClass: 'bg-emerald-50 text-emerald-600',
               },
               {
                 id: 'leads',
@@ -323,7 +332,7 @@ export function OverviewView({
                 value: kpis.leads,
                 sub: t.capturedInChat,
                 icon: Users,
-                iconClass: 'bg-[#F5F3FF] text-[#7C3AED]',
+                iconClass: 'bg-violet-50 text-violet-600',
               },
             ].map((card) => {
               const Icon = card.icon;
@@ -332,24 +341,24 @@ export function OverviewView({
                   key={card.label}
                   type="button"
                   onClick={() => onNavigate(card.id)}
-                  className="group bg-white border border-[#EAECEF] hover:border-[#D1D5DB] rounded-xl p-4 text-left transition flex flex-col justify-between"
+                  className="group bg-card border border-border hover:border-foreground/25 rounded-xl p-4 text-left transition flex flex-col justify-between shadow-2xs cursor-pointer"
                 >
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-xs font-medium text-[#6B7280]">{card.label}</span>
+                    <span className="text-xs font-medium text-muted-foreground">{card.label}</span>
                     <span
-                      className={`w-7 h-7 rounded-lg flex items-center justify-center ${card.iconClass}`}
+                      className={cn('size-7 rounded-lg flex items-center justify-center', card.iconClass)}
                       aria-hidden="true"
                     >
-                      <Icon className="w-3.5 h-3.5" />
+                      <Icon className="size-3.5" />
                     </span>
                   </div>
-                  <div className="mt-3 text-2xl font-semibold text-[#111827] tabular-nums">
+                  <div className="mt-3 text-2xl font-semibold text-foreground tabular-nums">
                     {Number(card.value).toLocaleString(locale)}
                   </div>
-                  <div className="mt-1.5 flex items-center justify-between gap-2 text-[11px] text-[#6B7280]">
+                  <div className="mt-1.5 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
                     <span className="truncate">{card.sub}</span>
                     <ArrowUpRight
-                      className="w-3.5 h-3.5 text-[#9CA3AF] opacity-0 group-hover:opacity-100 transition shrink-0"
+                      className="size-3.5 opacity-0 group-hover:opacity-100 transition shrink-0"
                       aria-hidden="true"
                     />
                   </div>
@@ -360,31 +369,31 @@ export function OverviewView({
 
           {/* Agent Setup & Quick Access Modules */}
           <section className="space-y-2.5">
-            <h2 className="text-xs font-semibold uppercase tracking-wider text-[#6B7280]">
+            <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
               {t.setupReadiness}
             </h2>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <button
                 type="button"
                 onClick={() => onNavigate('knowledge')}
-                className="bg-white border border-[#EAECEF] hover:border-[#D1D5DB] rounded-xl p-3.5 text-left transition flex items-start gap-3"
+                className="bg-card border border-border hover:border-foreground/25 rounded-xl p-3.5 text-left transition flex items-start gap-3 shadow-2xs cursor-pointer"
               >
                 <span
-                  className="w-8 h-8 rounded-lg bg-[#F3F4F6] text-[#374151] flex items-center justify-center shrink-0"
+                  className="size-8 rounded-lg bg-secondary text-secondary-foreground flex items-center justify-center shrink-0"
                   aria-hidden="true"
                 >
-                  <BookOpen className="w-4 h-4" />
+                  <BookOpen className="size-4" />
                 </span>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center justify-between gap-1">
-                    <span className="text-xs font-semibold text-[#111827] truncate">
+                    <span className="text-xs font-semibold text-foreground truncate">
                       {t.setupDocsTitle}
                     </span>
                     {knowledge.ready > 0 && (
-                      <CheckCircle2 className="w-3.5 h-3.5 text-[#10B981] shrink-0" aria-hidden="true" />
+                      <CheckCircle2 className="size-3.5 text-emerald-500 shrink-0" aria-hidden="true" />
                     )}
                   </div>
-                  <div className="text-[11px] text-[#6B7280] mt-0.5 truncate">
+                  <div className="text-[11px] text-muted-foreground mt-0.5 truncate">
                     {knowledge.chunks > 0
                       ? `${knowledge.chunks.toLocaleString(locale)} ${t.setupDocsReady}`
                       : t.setupDocsEmpty}
@@ -395,20 +404,20 @@ export function OverviewView({
               <button
                 type="button"
                 onClick={() => onNavigate('widget')}
-                className="bg-white border border-[#EAECEF] hover:border-[#D1D5DB] rounded-xl p-3.5 text-left transition flex items-start gap-3"
+                className="bg-card border border-border hover:border-foreground/25 rounded-xl p-3.5 text-left transition flex items-start gap-3 shadow-2xs cursor-pointer"
               >
                 <span
-                  className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 border border-black/10"
+                  className="size-8 rounded-lg flex items-center justify-center shrink-0 border border-black/10"
                   style={{ backgroundColor: agent.primaryColor || '#2563EB' }}
                   aria-hidden="true"
                 >
-                  <Paintbrush className="w-4 h-4 text-white" />
+                  <Paintbrush className="size-4 text-white" />
                 </span>
                 <div className="min-w-0 flex-1">
-                  <div className="text-xs font-semibold text-[#111827] truncate">
+                  <div className="text-xs font-semibold text-foreground truncate">
                     {t.setupWidgetTitle}
                   </div>
-                  <div className="text-[11px] text-[#6B7280] mt-0.5 truncate">
+                  <div className="text-[11px] text-muted-foreground mt-0.5 truncate">
                     {t.setupWidgetDesc} · {(agent.defaultLanguage || 'en').toUpperCase()}
                   </div>
                 </div>
@@ -417,19 +426,19 @@ export function OverviewView({
               <button
                 type="button"
                 onClick={() => onNavigate('tools')}
-                className="bg-white border border-[#EAECEF] hover:border-[#D1D5DB] rounded-xl p-3.5 text-left transition flex items-start gap-3"
+                className="bg-card border border-border hover:border-foreground/25 rounded-xl p-3.5 text-left transition flex items-start gap-3 shadow-2xs cursor-pointer"
               >
                 <span
-                  className="w-8 h-8 rounded-lg bg-[#F3F4F6] text-[#374151] flex items-center justify-center shrink-0"
+                  className="size-8 rounded-lg bg-secondary text-secondary-foreground flex items-center justify-center shrink-0"
                   aria-hidden="true"
                 >
-                  <Wrench className="w-4 h-4" />
+                  <Wrench className="size-4" />
                 </span>
                 <div className="min-w-0 flex-1">
-                  <div className="text-xs font-semibold text-[#111827] truncate">
+                  <div className="text-xs font-semibold text-foreground truncate">
                     {t.setupToolsTitle}
                   </div>
-                  <div className="text-[11px] text-[#6B7280] mt-0.5 truncate">
+                  <div className="text-[11px] text-muted-foreground mt-0.5 truncate">
                     {t.setupToolsDesc}
                   </div>
                 </div>
@@ -438,19 +447,19 @@ export function OverviewView({
               <button
                 type="button"
                 onClick={onOpenEmbed}
-                className="bg-white border border-[#EAECEF] hover:border-[#D1D5DB] rounded-xl p-3.5 text-left transition flex items-start gap-3"
+                className="bg-card border border-border hover:border-foreground/25 rounded-xl p-3.5 text-left transition flex items-start gap-3 shadow-2xs cursor-pointer"
               >
                 <span
-                  className="w-8 h-8 rounded-lg bg-[#F3F4F6] text-[#374151] flex items-center justify-center shrink-0"
+                  className="size-8 rounded-lg bg-secondary text-secondary-foreground flex items-center justify-center shrink-0"
                   aria-hidden="true"
                 >
-                  <Code2 className="w-4 h-4" />
+                  <Code2 className="size-4" />
                 </span>
                 <div className="min-w-0 flex-1">
-                  <div className="text-xs font-semibold text-[#111827] truncate">
+                  <div className="text-xs font-semibold text-foreground truncate">
                     {t.setupEmbedTitle}
                   </div>
-                  <div className="text-[11px] text-[#6B7280] mt-0.5 truncate">
+                  <div className="text-[11px] text-muted-foreground mt-0.5 truncate">
                     {allowedDomains.length} {t.setupDomainsCount}
                   </div>
                 </div>
@@ -460,83 +469,82 @@ export function OverviewView({
 
           {/* Runtime & Metering Row */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* Agent Runtime Card */}
-            <section className="bg-white border border-[#EAECEF] rounded-xl p-5 space-y-4">
+            <Card className="p-5 space-y-4">
               <div className="flex items-center justify-between">
-                <h2 className="text-sm font-semibold text-[#111827] flex items-center gap-2">
-                  <Cpu className="w-4 h-4 text-[#6B7280]" aria-hidden="true" />
+                <h2 className="text-sm font-semibold text-foreground flex items-center gap-2">
+                  <Cpu className="size-4 text-muted-foreground" aria-hidden="true" />
                   <span>{t.runtimeTitle}</span>
                 </h2>
-                <button
+                <Button
                   type="button"
-                  onClick={() => onNavigate('settings')}
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={() => onNavigate('account/byok')}
                   aria-label={t.configureSettings}
-                  className="text-xs text-[#6B7280] hover:text-[#111827]"
                 >
-                  <Settings className="w-3.5 h-3.5" aria-hidden="true" />
-                </button>
+                  <Settings className="size-3.5" aria-hidden="true" />
+                </Button>
               </div>
 
               <dl className="space-y-2.5 text-xs">
                 <div className="flex items-center justify-between gap-3">
-                  <dt className="text-[#6B7280] shrink-0">{t.chatModelLabel}</dt>
-                  <dd className="font-mono text-[11px] text-[#111827] bg-[#F8F9FB] border border-[#EAECEF] px-2 py-0.5 rounded-md truncate">
-                    {agent.chatModel}
+                  <dt className="text-muted-foreground shrink-0">{t.chatModelLabel}</dt>
+                  <dd className="font-mono text-[11px] text-foreground bg-muted border border-border px-2 py-0.5 rounded-md truncate">
+                    {aiStatus.chatModel || agent.chatModel}
                   </dd>
                 </div>
                 <div className="flex items-center justify-between gap-3">
-                  <dt className="text-[#6B7280] shrink-0">{t.embeddingModelLabel}</dt>
+                  <dt className="text-muted-foreground shrink-0">{t.embeddingModelLabel}</dt>
                   <dd
-                    className="font-mono text-[11px] text-[#111827] bg-[#F8F9FB] border border-[#EAECEF] px-2 py-0.5 rounded-md truncate"
-                    title={agent.embeddingModel}
+                    className="font-mono text-[11px] text-foreground bg-muted border border-border px-2 py-0.5 rounded-md truncate"
+                    title={aiStatus.embeddingModel || agent.embeddingModel}
                   >
-                    {String(agent.embeddingModel || '').split('/').pop()}
+                    {String(aiStatus.embeddingModel || agent.embeddingModel || '').split('/').pop()}
                   </dd>
                 </div>
                 <div className="flex items-center justify-between gap-3">
-                  <dt className="text-[#6B7280] shrink-0">{t.vectorDimsLabel}</dt>
-                  <dd className="font-medium text-[#111827] tabular-nums">
+                  <dt className="text-muted-foreground shrink-0">{t.vectorDimsLabel}</dt>
+                  <dd className="font-medium text-foreground tabular-nums">
                     {agent.embeddingDimensions ? `${agent.embeddingDimensions}d` : t.vectorAuto}
                   </dd>
                 </div>
                 <div className="flex items-center justify-between gap-3">
-                  <dt className="text-[#6B7280] shrink-0">{t.widgetLangLabel}</dt>
-                  <dd className="inline-flex items-center gap-1 font-medium text-[#111827] uppercase">
-                    <Globe className="w-3 h-3 text-[#6B7280]" aria-hidden="true" />
+                  <dt className="text-muted-foreground shrink-0">{t.widgetLangLabel}</dt>
+                  <dd className="inline-flex items-center gap-1 font-medium text-foreground uppercase">
+                    <Globe className="size-3 text-muted-foreground" aria-hidden="true" />
                     <span>{agent.defaultLanguage || 'en'}</span>
                   </dd>
                 </div>
               </dl>
-            </section>
+            </Card>
 
-            {/* Honest Usage & Metering Card */}
-            <section className="bg-white border border-[#EAECEF] rounded-xl p-5 flex flex-col justify-between space-y-4">
+            <Card className="p-5 flex flex-col justify-between space-y-4">
               <div>
-                <h2 className="text-sm font-semibold text-[#111827]">{t.usageCapacity}</h2>
+                <h2 className="text-sm font-semibold text-foreground">{t.usageCapacity}</h2>
                 <div className="mt-2 flex items-baseline gap-2">
-                  <span className="text-2xl font-semibold text-[#111827] tabular-nums">
+                  <span className="text-2xl font-semibold text-foreground tabular-nums">
                     {Number(usage.tokens).toLocaleString(locale)}
                   </span>
-                  <span className="text-xs text-[#6B7280]">{t.estimatedTokens}</span>
+                  <span className="text-xs text-muted-foreground">{t.estimatedTokens}</span>
                 </div>
               </div>
 
               {hasUsage ? (
                 <div className="space-y-3">
-                  <div className="h-2 w-full rounded-full bg-[#F3F4F6] overflow-hidden flex">
-                    <div className="h-full bg-[#2563EB]" style={{ width: `${chatSharePct}%` }} />
-                    <div className="h-full bg-[#F59E0B] flex-1" />
+                  <div className="h-2 w-full rounded-full bg-secondary overflow-hidden flex">
+                    <div className="h-full bg-blue-600" style={{ width: `${chatSharePct}%` }} />
+                    <div className="h-full bg-amber-500 flex-1" />
                   </div>
                   <div className="grid grid-cols-2 gap-2 text-xs">
-                    <div className="p-2.5 rounded-lg bg-[#F8F9FB] border border-[#EAECEF]">
-                      <div className="text-[11px] text-[#6B7280]">{t.turnsMetered}</div>
-                      <div className="font-semibold text-[#111827] tabular-nums mt-0.5">
+                    <div className="p-2.5 rounded-lg bg-muted/60 border border-border">
+                      <div className="text-[11px] text-muted-foreground">{t.turnsMetered}</div>
+                      <div className="font-semibold text-foreground tabular-nums mt-0.5">
                         {Number(usage.turns).toLocaleString(locale)}
                       </div>
                     </div>
-                    <div className="p-2.5 rounded-lg bg-[#F8F9FB] border border-[#EAECEF]">
-                      <div className="text-[11px] text-[#6B7280]">{t.toolCallsLabel}</div>
-                      <div className="font-semibold text-[#111827] tabular-nums mt-0.5">
+                    <div className="p-2.5 rounded-lg bg-muted/60 border border-border">
+                      <div className="text-[11px] text-muted-foreground">{t.toolCallsLabel}</div>
+                      <div className="font-semibold text-foreground tabular-nums mt-0.5">
                         {Number(usage.toolCalls).toLocaleString(locale)}
                       </div>
                     </div>
@@ -544,126 +552,129 @@ export function OverviewView({
                 </div>
               ) : (
                 <div className="space-y-2.5">
-                  <div className="h-2 w-full rounded-full bg-[#F3F4F6]" />
-                  <p className="text-xs text-[#6B7280] leading-relaxed">{t.noUsageYet}</p>
+                  <Progress value={0} />
+                  <p className="text-xs text-muted-foreground leading-relaxed">{t.noUsageYet}</p>
                 </div>
               )}
-            </section>
+            </Card>
           </div>
 
           {/* Recent Tickets & Escalations */}
-          <section className="bg-white border border-[#EAECEF] rounded-xl overflow-hidden">
-            <div className="px-5 py-3.5 border-b border-[#F3F4F6] flex items-center justify-between">
-              <h2 className="text-sm font-semibold text-[#111827]">{t.recentActivity}</h2>
-              <button
+          <Card className="overflow-hidden">
+            <div className="px-5 py-3.5 border-b border-border flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-foreground">{t.recentActivity}</h2>
+              <Button
                 type="button"
+                variant="link"
+                size="xs"
                 onClick={() => onNavigate('tickets')}
-                className="text-xs font-medium text-[#2563EB] hover:underline"
+                className="text-blue-600 px-0"
               >
                 {t.viewAll}
-              </button>
+              </Button>
             </div>
             {recentTickets.length === 0 ? (
-              <div className="px-5 py-7 text-center space-y-2">
-                <p className="text-xs font-medium text-[#374151]">{t.noTicketsYet}</p>
-                <p className="text-xs text-[#6B7280] max-w-md mx-auto">{t.noTicketsHint}</p>
+              <div className="px-5 py-8 text-center space-y-2">
+                <div className="size-9 rounded-xl bg-muted text-muted-foreground mx-auto flex items-center justify-center">
+                  <LifeBuoy className="size-4" aria-hidden="true" />
+                </div>
+                <p className="text-xs font-medium text-foreground">{t.noTicketsYet}</p>
+                <p className="text-xs text-muted-foreground max-w-md mx-auto">{t.noTicketsHint}</p>
               </div>
             ) : (
-              <ul className="divide-y divide-[#F3F4F6]">
+              <ul className="divide-y divide-border">
                 {recentTickets.map((tk: any) => (
                   <li
                     key={tk.id}
-                    className="px-5 py-3 flex items-center justify-between gap-3 hover:bg-[#FAFAFB] transition"
+                    className="px-5 py-3 flex items-center justify-between gap-3 hover:bg-muted/40 transition"
                   >
                     <div className="min-w-0">
-                      <div className="text-xs font-medium text-[#111827] truncate">
+                      <div className="text-xs font-medium text-foreground truncate">
                         {tk.subject}
                       </div>
-                      <div className="text-[11px] text-[#6B7280] truncate">{tk.visitorEmail}</div>
+                      <div className="text-[11px] text-muted-foreground truncate">
+                        {tk.visitorEmail}
+                      </div>
                     </div>
-                    <span
-                      className={`text-[11px] px-2.5 py-0.5 rounded-full font-medium shrink-0 ${
-                        tk.status === 'open'
-                          ? 'bg-[#FEF2F2] text-[#B91C1C]'
-                          : 'bg-[#ECFDF5] text-[#047857]'
-                      }`}
-                    >
+                    <Badge variant={tk.status === 'open' ? 'destructive' : 'success'}>
                       {tk.status === 'open' ? t.ticketOpen : t.ticketResolved}
-                    </span>
+                    </Badge>
                   </li>
                 ))}
               </ul>
             )}
-          </section>
+          </Card>
         </div>
       </div>
 
-      {/* Right Context Panel: Agent Highlight + Live Updates (Conversations, Clients, Bookings) */}
-      <aside className="hidden xl:flex w-[316px] border-l border-[#EAECEF] bg-white flex-col overflow-y-auto sidebar-scroll p-4 space-y-5 shrink-0">
+      {/* Right Context Panel */}
+      <aside className="hidden xl:flex w-[316px] border-l border-border bg-card flex-col overflow-y-auto sidebar-scroll p-4 space-y-5 shrink-0">
         {/* Pastel Mesh Agent Card */}
-        <div className="border border-[#EAECEF] rounded-2xl overflow-hidden shrink-0">
+        <Card className="rounded-2xl overflow-hidden shrink-0">
           <div className="h-20 mesh-banner" />
           <div className="px-4 pb-4 -mt-7">
-            <div
-              className="w-14 h-14 rounded-full text-white border-4 border-white flex items-center justify-center text-lg font-bold shadow-xs"
-              style={{ backgroundColor: agent.primaryColor || '#18181B' }}
-            >
-              {String(agent.name || 'A').slice(0, 1).toUpperCase()}
-            </div>
+            <Avatar className="size-14 border-4 border-card shadow-xs">
+              <AvatarFallback
+                className="text-white text-lg font-bold"
+                style={{ backgroundColor: agent.primaryColor || '#18181B' }}
+              >
+                {String(agent.name || 'A').slice(0, 1).toUpperCase()}
+              </AvatarFallback>
+            </Avatar>
             <div className="mt-2 flex items-center gap-1.5">
-              <h2 className="text-sm font-semibold text-[#111827] truncate">{agent.name}</h2>
-              <BadgeCheck className="w-4 h-4 text-[#2563EB] shrink-0" aria-hidden="true" />
+              <h2 className="text-sm font-semibold text-foreground truncate">{agent.name}</h2>
+              <BadgeCheck className="size-4 text-blue-600 shrink-0" aria-hidden="true" />
             </div>
-            <div className="mt-1 flex items-center gap-2 text-xs text-[#6B7280]">
+            <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
               <span className="truncate">{agent.chatModel}</span>
-              <span className="px-2 py-0.5 rounded-full bg-[#DCFCE7] text-[#15803D] text-[10px] font-medium shrink-0">
+              <Badge variant="success" className="text-[10px]">
                 {t.online}
-              </span>
+              </Badge>
             </div>
 
             <div className="mt-3 grid grid-cols-3 gap-1.5">
-              <button
+              <Button
                 type="button"
+                variant="outline"
+                size="xs"
                 onClick={() => onNavigate('widget')}
-                className="px-2 py-1.5 rounded-lg border border-[#EAECEF] hover:bg-[#F9FAFB] text-[11px] font-medium text-[#374151] flex items-center justify-center gap-1 transition"
               >
-                <Paintbrush className="w-3 h-3" aria-hidden="true" />
+                <Paintbrush className="size-3" aria-hidden="true" />
                 <span>{t.quickWidgetBtn}</span>
-              </button>
-              <button
-                type="button"
-                onClick={onOpenEmbed}
-                className="px-2 py-1.5 rounded-lg border border-[#EAECEF] hover:bg-[#F9FAFB] text-[11px] font-medium text-[#374151] flex items-center justify-center gap-1 transition"
-              >
-                <Code2 className="w-3 h-3" aria-hidden="true" />
+              </Button>
+              <Button type="button" variant="outline" size="xs" onClick={onOpenEmbed}>
+                <Code2 className="size-3" aria-hidden="true" />
                 <span>{t.quickEmbedBtn}</span>
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
+                variant="outline"
+                size="xs"
                 onClick={() => onNavigate('tools')}
-                className="px-2 py-1.5 rounded-lg border border-[#EAECEF] hover:bg-[#F9FAFB] text-[11px] font-medium text-[#374151] flex items-center justify-center gap-1 transition"
               >
-                <Wrench className="w-3 h-3" aria-hidden="true" />
+                <Wrench className="size-3" aria-hidden="true" />
                 <span>{t.quickToolsBtn}</span>
-              </button>
+              </Button>
             </div>
           </div>
-        </div>
+        </Card>
 
         {/* Recent Conversations */}
         <div>
           <div className="flex items-center justify-between mb-2">
-            <h3 className="text-xs font-semibold text-[#111827]">{t.recentConversations}</h3>
-            <button
+            <h3 className="text-xs font-semibold text-foreground">{t.recentConversations}</h3>
+            <Button
               type="button"
+              variant="link"
+              size="xs"
               onClick={() => onNavigate('inbox')}
-              className="text-[11px] font-medium text-[#2563EB] hover:underline"
+              className="text-blue-600 h-auto p-0 text-[11px]"
             >
               {t.viewAll}
-            </button>
+            </Button>
           </div>
           {recentConversations.length === 0 ? (
-            <p className="text-xs text-[#9CA3AF]">{t.noConversationsYet}</p>
+            <p className="text-xs text-muted-foreground">{t.noConversationsYet}</p>
           ) : (
             <ul className="space-y-1.5">
               {recentConversations.map((c) => (
@@ -671,19 +682,19 @@ export function OverviewView({
                   <button
                     type="button"
                     onClick={() => onNavigate('inbox')}
-                    className="w-full flex items-center gap-2.5 p-2 rounded-xl hover:bg-[#F8F9FB] text-left transition"
+                    className="w-full flex items-center gap-2.5 p-2 rounded-xl hover:bg-muted/60 text-left transition cursor-pointer"
                   >
                     <span
-                      className="w-8 h-8 rounded-lg bg-[#EFF6FF] text-[#2563EB] flex items-center justify-center shrink-0"
+                      className="size-8 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center shrink-0"
                       aria-hidden="true"
                     >
-                      <MessageSquare className="w-3.5 h-3.5" />
+                      <MessageSquare className="size-3.5" />
                     </span>
                     <div className="min-w-0 flex-1">
-                      <div className="text-xs font-medium text-[#111827] truncate">
+                      <div className="text-xs font-medium text-foreground truncate">
                         {c.visitorEmail || c.pageUrl || '/'}
                       </div>
-                      <div className="text-[11px] text-[#6B7280] flex items-center gap-1.5">
+                      <div className="text-[11px] text-muted-foreground flex items-center gap-1.5">
                         <span className="capitalize">{c.mode}</span>
                         <span>·</span>
                         <span>
@@ -701,17 +712,19 @@ export function OverviewView({
         {/* Recent Clients & Leads */}
         <div>
           <div className="flex items-center justify-between mb-2">
-            <h3 className="text-xs font-semibold text-[#111827]">{t.recentClients}</h3>
-            <button
+            <h3 className="text-xs font-semibold text-foreground">{t.recentClients}</h3>
+            <Button
               type="button"
+              variant="link"
+              size="xs"
               onClick={() => onNavigate('leads')}
-              className="text-[11px] font-medium text-[#2563EB] hover:underline"
+              className="text-blue-600 h-auto p-0 text-[11px]"
             >
               {t.viewAll}
-            </button>
+            </Button>
           </div>
           {recentLeads.length === 0 ? (
-            <p className="text-xs text-[#9CA3AF]">{t.noClientsYet}</p>
+            <p className="text-xs text-muted-foreground">{t.noClientsYet}</p>
           ) : (
             <ul className="space-y-1.5">
               {recentLeads.map((ld) => (
@@ -719,19 +732,18 @@ export function OverviewView({
                   <button
                     type="button"
                     onClick={() => onNavigate('leads')}
-                    className="w-full flex items-center gap-2.5 p-2 rounded-xl hover:bg-[#F8F9FB] text-left transition"
+                    className="w-full flex items-center gap-2.5 p-2 rounded-xl hover:bg-muted/60 text-left transition cursor-pointer"
                   >
-                    <span
-                      className="w-8 h-8 rounded-lg bg-[#F5F3FF] text-[#7C3AED] text-xs font-semibold flex items-center justify-center shrink-0"
-                      aria-hidden="true"
-                    >
-                      {String(ld.name || ld.email || '?').slice(0, 1).toUpperCase()}
-                    </span>
+                    <Avatar className="size-8 rounded-lg">
+                      <AvatarFallback className="rounded-lg bg-violet-50 text-violet-600">
+                        {String(ld.name || ld.email || '?').slice(0, 1).toUpperCase()}
+                      </AvatarFallback>
+                    </Avatar>
                     <div className="min-w-0 flex-1">
-                      <div className="text-xs font-medium text-[#111827] truncate">
+                      <div className="text-xs font-medium text-foreground truncate">
                         {ld.name || ld.email}
                       </div>
-                      <div className="text-[11px] text-[#6B7280] truncate">
+                      <div className="text-[11px] text-muted-foreground truncate">
                         {ld.interest || ld.email}
                       </div>
                     </div>
@@ -745,35 +757,37 @@ export function OverviewView({
         {/* Upcoming Bookings */}
         <div>
           <div className="flex items-center justify-between mb-2">
-            <h3 className="text-xs font-semibold text-[#111827]">{t.upcoming}</h3>
-            <button
+            <h3 className="text-xs font-semibold text-foreground">{t.upcoming}</h3>
+            <Button
               type="button"
+              variant="link"
+              size="xs"
               onClick={() => onNavigate('schedule')}
-              className="text-[11px] font-medium text-[#2563EB] hover:underline"
+              className="text-blue-600 h-auto p-0 text-[11px]"
             >
               {t.viewAll}
-            </button>
+            </Button>
           </div>
           {upcomingBookings.length === 0 ? (
-            <p className="text-xs text-[#9CA3AF]">{t.noBookingsYet}</p>
+            <p className="text-xs text-muted-foreground">{t.noBookingsYet}</p>
           ) : (
             <ul className="space-y-1.5">
               {upcomingBookings.map((b: any) => (
                 <li
                   key={b.id}
-                  className="flex items-center gap-2.5 p-2 rounded-xl hover:bg-[#F8F9FB] transition"
+                  className="flex items-center gap-2.5 p-2 rounded-xl hover:bg-muted/60 transition"
                 >
                   <span
-                    className="w-8 h-8 rounded-lg bg-[#ECFDF5] text-[#059669] flex items-center justify-center shrink-0"
+                    className="size-8 rounded-lg bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0"
                     aria-hidden="true"
                   >
-                    <Calendar className="w-3.5 h-3.5" />
+                    <Calendar className="size-3.5" />
                   </span>
                   <div className="min-w-0 flex-1">
-                    <div className="text-xs font-medium text-[#111827] truncate">
+                    <div className="text-xs font-medium text-foreground truncate">
                       {b.visitorName}
                     </div>
-                    <div className="text-[11px] text-[#6B7280]">
+                    <div className="text-[11px] text-muted-foreground">
                       {new Date(b.startsAt).toLocaleString(locale)}
                     </div>
                   </div>
@@ -784,21 +798,21 @@ export function OverviewView({
         </div>
 
         {/* Bottom Pastel Mesh Highlight Card */}
-        <div className="mt-auto p-4 rounded-2xl border border-[#EAECEF] mesh-recap shrink-0">
-          <div className="w-7 h-7 rounded-lg bg-white border border-[#EAECEF] flex items-center justify-center mb-2.5">
-            <Sparkles className="w-4 h-4 text-[#18181B]" aria-hidden="true" />
+        <Card className="mt-auto p-4 rounded-2xl mesh-recap shrink-0">
+          <div className="size-7 rounded-lg bg-background border border-border flex items-center justify-center mb-2.5">
+            <Sparkles className="size-4 text-foreground" aria-hidden="true" />
           </div>
-          <h3 className="text-sm font-semibold text-[#111827]">{t.recapTitle}</h3>
-          <p className="text-xs text-[#6B7280] mt-1">{t.recapDesc}</p>
-          <button
+          <h3 className="text-sm font-semibold text-foreground">{t.recapTitle}</h3>
+          <p className="text-xs text-muted-foreground mt-1">{t.recapDesc}</p>
+          <Button
             type="button"
             onClick={() => onNavigate('playground')}
-            className="mt-3 w-full py-2 rounded-lg bg-[#18181B] text-white text-xs font-medium hover:bg-[#27272A] inline-flex items-center justify-center gap-1.5 transition"
+            className="mt-3 w-full"
           >
-            <Sparkles className="w-3.5 h-3.5" aria-hidden="true" />
+            <Sparkles className="size-3.5" aria-hidden="true" />
             <span>{t.openPlayground}</span>
-          </button>
-        </div>
+          </Button>
+        </Card>
       </aside>
     </div>
   );

@@ -55,6 +55,18 @@ CREATE TABLE IF NOT EXISTS provider_keys (
 );
 CREATE INDEX IF NOT EXISTS idx_provider_keys_workspace ON provider_keys(workspace_id);
 
+-- Global account-level BYOK key & model configuration on workspaces
+ALTER TABLE workspaces
+  ADD COLUMN IF NOT EXISTS chat_provider_key_id UUID REFERENCES provider_keys(id) ON DELETE SET NULL;
+ALTER TABLE workspaces
+  ADD COLUMN IF NOT EXISTS chat_model TEXT NOT NULL DEFAULT 'tencent/hy4-flash';
+ALTER TABLE workspaces
+  ADD COLUMN IF NOT EXISTS embedding_provider_key_id UUID REFERENCES provider_keys(id) ON DELETE SET NULL;
+ALTER TABLE workspaces
+  ADD COLUMN IF NOT EXISTS embedding_model TEXT NOT NULL DEFAULT 'alibaba/qwen3-embedding-0.6b';
+ALTER TABLE workspaces
+  ADD COLUMN IF NOT EXISTS allowed_domains JSONB NOT NULL DEFAULT '[]'::jsonb;
+
 CREATE TABLE IF NOT EXISTS agents (
   id UUID PRIMARY KEY DEFAULT uuidv7(),
   workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
@@ -78,6 +90,42 @@ CREATE TABLE IF NOT EXISTS agents (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_agents_workspace ON agents(workspace_id);
+
+-- Backfill workspace-level global BYOK key/model settings from legacy per-agent columns (idempotent)
+DO $$
+BEGIN
+  UPDATE workspaces w
+  SET
+    chat_provider_key_id = COALESCE(
+      w.chat_provider_key_id,
+      (SELECT a.chat_provider_key_id FROM agents a WHERE a.workspace_id = w.id AND a.chat_provider_key_id IS NOT NULL ORDER BY a.created_at ASC LIMIT 1)
+    ),
+    chat_model = COALESCE(
+      NULLIF(w.chat_model, 'tencent/hy4-flash'),
+      (SELECT a.chat_model FROM agents a WHERE a.workspace_id = w.id AND a.chat_provider_key_id IS NOT NULL ORDER BY a.created_at ASC LIMIT 1),
+      w.chat_model
+    ),
+    embedding_provider_key_id = COALESCE(
+      w.embedding_provider_key_id,
+      (SELECT a.embedding_provider_key_id FROM agents a WHERE a.workspace_id = w.id AND a.embedding_provider_key_id IS NOT NULL ORDER BY a.created_at ASC LIMIT 1)
+    ),
+    embedding_model = COALESCE(
+      NULLIF(w.embedding_model, 'alibaba/qwen3-embedding-0.6b'),
+      (SELECT a.embedding_model FROM agents a WHERE a.workspace_id = w.id AND a.embedding_provider_key_id IS NOT NULL ORDER BY a.created_at ASC LIMIT 1),
+      w.embedding_model
+    ),
+    allowed_domains = CASE
+      WHEN jsonb_array_length(w.allowed_domains) > 0 THEN w.allowed_domains
+      ELSE COALESCE(
+        (
+          SELECT jsonb_agg(DISTINCT d)
+          FROM agents a, LATERAL jsonb_array_elements_text(a.allowed_domains) AS d
+          WHERE a.workspace_id = w.id
+        ),
+        '[]'::jsonb
+      )
+    END;
+END $$;
 
 CREATE TABLE IF NOT EXISTS knowledge_sources (
   id UUID PRIMARY KEY DEFAULT uuidv7(),

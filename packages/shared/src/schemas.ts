@@ -79,17 +79,33 @@ export const CreateAgentSchema = z.object({
     { pattern: '/docs/*', mode: 'support' },
     { pattern: '/help/*', mode: 'support' },
   ]),
-  chatProviderKeyId: z.string().uuid().nullable().optional(),
-  chatModel: z.string().trim().min(1).max(200).default(DEFAULT_MODELS.chat),
-  embeddingProviderKeyId: z.string().uuid().nullable().optional(),
-  embeddingModel: z.string().trim().min(1).max(200).default(DEFAULT_MODELS.embedding),
   maxMessagesPerConversation: z.number().int().min(5).max(500).default(50),
   showBranding: z.boolean().default(true),
   primaryColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).default('#2563EB'),
 });
 
-export const UpdateAgentSchema = CreateAgentSchema.partial().extend({
+export const UpdateAgentSchema = CreateAgentSchema.partial();
+
+export const UpdateAccountAiSettingsSchema = z.object({
+  chatProviderKeyId: z.string().uuid().nullable().optional(),
+  chatModel: z.string().trim().min(1).max(200).optional(),
+  embeddingProviderKeyId: z.string().uuid().nullable().optional(),
+  embeddingModel: z.string().trim().min(1).max(200).optional(),
   confirmReindex: z.boolean().optional(),
+});
+
+export const UpdateAccountSettingsSchema = z.object({
+  allowedDomains: z.array(z.string().trim().min(1).max(255)).max(100),
+});
+
+export const UpdateAccountProfileSchema = z.object({
+  name: z.string().trim().min(2).max(100),
+  workspaceName: z.string().trim().min(2).max(100).optional(),
+});
+
+export const ChangePasswordSchema = z.object({
+  currentPassword: z.string().min(1).max(128),
+  newPassword: PasswordSchema,
 });
 
 export const CreateProviderKeySchema = z.object({
@@ -99,6 +115,7 @@ export const CreateProviderKeySchema = z.object({
   apiKey: z.string().trim().min(1).max(1000),
   baseUrl: z.string().url().max(500).optional().or(z.literal('')),
   defaultModel: z.string().trim().max(200).optional(),
+  activate: z.boolean().optional(),
 });
 
 export const CreateKnowledgeTextSchema = z.object({

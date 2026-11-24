@@ -21,10 +21,13 @@ import {
   tickets,
   tools,
   usageEvents,
+  users,
+  workspaces,
 } from '@askmink/db';
 import {
   AvailabilityBlockSchema,
   AvailabilityRuleSchema,
+  ChangePasswordSchema,
   CreateAgentSchema,
   CreateBookingSchema,
   CreateKnowledgeTextSchema,
@@ -39,6 +42,9 @@ import {
   LoginSchema,
   SignupSchema,
   TestToolSchema,
+  UpdateAccountAiSettingsSchema,
+  UpdateAccountProfileSchema,
+  UpdateAccountSettingsSchema,
   UpdateAgentSchema,
   UpdateProductSchema,
   UpdateTicketSchema,
@@ -47,12 +53,17 @@ import {
 } from '@askmink/shared';
 import type { AppConfig } from '../config.js';
 import type { AuthService, AuthUser } from '../auth/index.js';
-import { CryptoService, generateRandomToken } from '../crypto/encryption.js';
+import {
+  CryptoService,
+  generateRandomToken,
+  hashPassword,
+  verifyPassword,
+} from '../crypto/encryption.js';
 import type { StorageAdapter } from '../storage/index.js';
 import { validateKnowledgeUpload } from '../storage/index.js';
 import type { JobRunner } from '../jobs/index.js';
 import type { AgentOrchestrator } from '../ai/orchestrator.js';
-import { checkEmbeddingModelMismatch } from '../rag/index.js';
+import { checkWorkspaceEmbeddingModelMismatch } from '../rag/index.js';
 import { executeHttpTool, listRemoteMcpTools } from '../tools/index.js';
 import {
   BookingConflictError,
@@ -168,7 +179,323 @@ export function registerRoutes(app: Hono, deps: RouteDeps): void {
     return requireAdminAuth(c, next);
   });
 
-  // --- Provider Keys (BYOK) ---
+  // --- Global Account AI Settings & Provider Keys (BYOK) ---
+  async function validateWorkspaceKeyRef(
+    keyId: string | null | undefined,
+    workspaceId: string,
+    expectedPurpose: 'chat' | 'embedding'
+  ): Promise<boolean> {
+    if (!keyId) return true;
+    const row = await db.query.providerKeys.findFirst({
+      where: and(
+        eq(providerKeys.id, keyId),
+        eq(providerKeys.workspaceId, workspaceId),
+        eq(providerKeys.purpose, expectedPurpose)
+      ),
+    });
+    if (!row) return false;
+    if (expectedPurpose === 'embedding' && row.provider === 'anthropic') {
+      return false;
+    }
+    return true;
+  }
+
+  function sanitizeProviderKey(r: typeof providerKeys.$inferSelect) {
+    return {
+      id: r.id,
+      provider: r.provider,
+      purpose: r.purpose,
+      label: r.label,
+      keyLast4: r.keyLast4,
+      baseUrl: r.baseUrl,
+      defaultModel: r.defaultModel,
+      createdAt: r.createdAt,
+    };
+  }
+
+  admin.get('/account/profile', async (c) => {
+    const { userId, workspaceId, role } = c.get('authUser');
+    const [userRow, workspaceRow, agentCountRes] = await Promise.all([
+      db.query.users.findFirst({ where: eq(users.id, userId) }),
+      db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId) }),
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(agents)
+        .where(eq(agents.workspaceId, workspaceId)),
+    ]);
+    if (!userRow || !workspaceRow) {
+      return c.json({ error: 'Account not found' }, 404);
+    }
+
+    return c.json({
+      profile: {
+        userId: userRow.id,
+        name: userRow.name,
+        email: userRow.email,
+        authProvider: userRow.authProvider,
+        createdAt: userRow.createdAt,
+        workspaceId: workspaceRow.id,
+        workspaceName: workspaceRow.name,
+        role,
+        agentsCount: agentCountRes[0]?.count ?? 0,
+      },
+    });
+  });
+
+  admin.patch('/account/profile', async (c) => {
+    const { userId, workspaceId, role } = c.get('authUser');
+    const parsed = UpdateAccountProfileSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) {
+      return c.json({ error: 'Validation failed', details: parsed.error.flatten() }, 400);
+    }
+
+    const [updatedUser] = await db
+      .update(users)
+      .set({ name: parsed.data.name })
+      .where(eq(users.id, userId))
+      .returning();
+
+    let updatedWorkspace = await db.query.workspaces.findFirst({
+      where: eq(workspaces.id, workspaceId),
+    });
+
+    if (parsed.data.workspaceName && (role === 'owner' || role === 'admin')) {
+      const [ws] = await db
+        .update(workspaces)
+        .set({ name: parsed.data.workspaceName })
+        .where(eq(workspaces.id, workspaceId))
+        .returning();
+      if (ws) updatedWorkspace = ws;
+    }
+
+    if (!updatedUser || !updatedWorkspace) {
+      return c.json({ error: 'Account not found' }, 404);
+    }
+
+    return c.json({
+      profile: {
+        userId: updatedUser.id,
+        name: updatedUser.name,
+        email: updatedUser.email,
+        authProvider: updatedUser.authProvider,
+        createdAt: updatedUser.createdAt,
+        workspaceId: updatedWorkspace.id,
+        workspaceName: updatedWorkspace.name,
+        role,
+      },
+    });
+  });
+
+  admin.post('/account/change-password', async (c) => {
+    const { userId } = c.get('authUser');
+    const parsed = ChangePasswordSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) {
+      return c.json({ error: 'Validation failed', details: parsed.error.flatten() }, 400);
+    }
+
+    const userRow = await db.query.users.findFirst({ where: eq(users.id, userId) });
+    if (!userRow || !userRow.passwordHash || userRow.authProvider !== 'local') {
+      return c.json({ error: 'Password change is only available for local accounts' }, 400);
+    }
+
+    const valid = await verifyPassword(parsed.data.currentPassword, userRow.passwordHash);
+    if (!valid) {
+      return c.json({ error: 'Current password is incorrect' }, 401);
+    }
+
+    const nextHash = await hashPassword(parsed.data.newPassword);
+    await db.update(users).set({ passwordHash: nextHash }).where(eq(users.id, userId));
+    return c.json({ ok: true });
+  });
+
+  admin.get('/account/ai-settings', async (c) => {
+    const { workspaceId } = c.get('authUser');
+    const [workspace, rows] = await Promise.all([
+      db.query.workspaces.findFirst({
+        where: eq(workspaces.id, workspaceId),
+      }),
+      db.query.providerKeys.findMany({
+        where: eq(providerKeys.workspaceId, workspaceId),
+        orderBy: [desc(providerKeys.createdAt)],
+      }),
+    ]);
+
+    return c.json({
+      settings: {
+        chatProviderKeyId: workspace?.chatProviderKeyId ?? null,
+        chatModel: workspace?.chatModel ?? config.defaultChatModel,
+        embeddingProviderKeyId: workspace?.embeddingProviderKeyId ?? null,
+        embeddingModel: workspace?.embeddingModel ?? config.defaultEmbeddingModel,
+        gatewayConfigured: Boolean(config.aiGatewayApiKey),
+        defaultChatModel: config.defaultChatModel,
+        defaultEmbeddingModel: config.defaultEmbeddingModel,
+      },
+      // NEVER return encryptedApiKey or plaintext apiKey
+      keys: rows.map(sanitizeProviderKey),
+    });
+  });
+
+  admin.patch('/account/ai-settings', async (c) => {
+    const { workspaceId } = c.get('authUser');
+    const parsed = UpdateAccountAiSettingsSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) {
+      return c.json({ error: 'Validation failed', details: parsed.error.flatten() }, 400);
+    }
+
+    const [chatKeyOk, embKeyOk, existingWorkspace] = await Promise.all([
+      validateWorkspaceKeyRef(parsed.data.chatProviderKeyId, workspaceId, 'chat'),
+      validateWorkspaceKeyRef(parsed.data.embeddingProviderKeyId, workspaceId, 'embedding'),
+      db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId) }),
+    ]);
+    if (!chatKeyOk || !embKeyOk) {
+      return c.json({ error: 'Provider key not found in account or incompatible purpose' }, 400);
+    }
+    if (!existingWorkspace) {
+      return c.json({ error: 'Account workspace not found' }, 404);
+    }
+
+    // Block embedding model change without explicit reindex confirmation if chunks already exist in account
+    if (parsed.data.embeddingModel && parsed.data.embeddingModel !== existingWorkspace.embeddingModel) {
+      const mismatch = await checkWorkspaceEmbeddingModelMismatch(
+        db,
+        workspaceId,
+        parsed.data.embeddingModel
+      );
+      if (mismatch.hasIndexedChunks && !parsed.data.confirmReindex) {
+        return c.json(
+          {
+            error: 'EMBEDDING_REINDEX_REQUIRED',
+            message: `This account has ${mismatch.chunkCount} chunks indexed with "${mismatch.currentModel}". Confirm reindex to switch to "${parsed.data.embeddingModel}".`,
+            currentModel: mismatch.currentModel,
+            chunkCount: mismatch.chunkCount,
+          },
+          409
+        );
+      }
+    }
+
+    const { confirmReindex, ...patch } = parsed.data;
+    const workspacePatch: Partial<typeof workspaces.$inferInsert> = {};
+    if (patch.chatProviderKeyId !== undefined) workspacePatch.chatProviderKeyId = patch.chatProviderKeyId;
+    if (patch.chatModel !== undefined) workspacePatch.chatModel = patch.chatModel;
+    if (patch.embeddingProviderKeyId !== undefined) {
+      workspacePatch.embeddingProviderKeyId = patch.embeddingProviderKeyId;
+    }
+    if (patch.embeddingModel !== undefined) workspacePatch.embeddingModel = patch.embeddingModel;
+
+    let updated = existingWorkspace;
+    if (Object.keys(workspacePatch).length > 0) {
+      const [row] = await db
+        .update(workspaces)
+        .set(workspacePatch)
+        .where(eq(workspaces.id, workspaceId))
+        .returning();
+      if (row) updated = row;
+
+      // Sync global chat/embedding model labels onto workspace agents so agent metadata stays aligned
+      const agentSyncPatch: Record<string, unknown> = {};
+      if (patch.chatModel !== undefined) agentSyncPatch.chatModel = patch.chatModel;
+      if (patch.embeddingModel !== undefined) agentSyncPatch.embeddingModel = patch.embeddingModel;
+      if (Object.keys(agentSyncPatch).length > 0) {
+        await db
+          .update(agents)
+          .set({ ...agentSyncPatch, updatedAt: new Date() })
+          .where(eq(agents.workspaceId, workspaceId));
+      }
+    }
+
+    // If embedding model changed with confirmReindex, enqueue re-indexing of all sources in workspace
+    if (
+      confirmReindex &&
+      parsed.data.embeddingModel &&
+      parsed.data.embeddingModel !== existingWorkspace.embeddingModel
+    ) {
+      const sources = await db.query.knowledgeSources.findMany({
+        where: eq(knowledgeSources.workspaceId, workspaceId),
+      });
+      for (const s of sources) {
+        await jobs.enqueueKnowledgeIngest({ sourceId: s.id, workspaceId, agentId: s.agentId });
+      }
+    }
+
+    return c.json({
+      settings: {
+        chatProviderKeyId: updated.chatProviderKeyId ?? null,
+        chatModel: updated.chatModel,
+        embeddingProviderKeyId: updated.embeddingProviderKeyId ?? null,
+        embeddingModel: updated.embeddingModel,
+        gatewayConfigured: Boolean(config.aiGatewayApiKey),
+        defaultChatModel: config.defaultChatModel,
+        defaultEmbeddingModel: config.defaultEmbeddingModel,
+      },
+    });
+  });
+
+  // --- Global Account Settings (Allowed Domains for all agents) ---
+  admin.get('/account/settings', async (c) => {
+    const { workspaceId } = c.get('authUser');
+    const [workspace, workspaceAgents] = await Promise.all([
+      db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId) }),
+      db.query.agents.findMany({
+        where: eq(agents.workspaceId, workspaceId),
+        columns: { allowedDomains: true },
+      }),
+    ]);
+
+    const workspaceDomains = Array.isArray(workspace?.allowedDomains)
+      ? workspace.allowedDomains
+      : [];
+    const effectiveDomains =
+      workspaceDomains.length > 0
+        ? workspaceDomains
+        : Array.from(
+            new Set(
+              workspaceAgents.flatMap((a) =>
+                Array.isArray(a.allowedDomains) ? a.allowedDomains : []
+              )
+            )
+          );
+
+    return c.json({
+      settings: {
+        allowedDomains: effectiveDomains,
+      },
+    });
+  });
+
+  admin.patch('/account/settings', async (c) => {
+    const { workspaceId } = c.get('authUser');
+    const parsed = UpdateAccountSettingsSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) {
+      return c.json({ error: 'Validation failed', details: parsed.error.flatten() }, 400);
+    }
+
+    const normalizedDomains = Array.from(
+      new Set(parsed.data.allowedDomains.map((d) => d.trim()).filter(Boolean))
+    );
+
+    const [updatedWorkspace] = await db
+      .update(workspaces)
+      .set({ allowedDomains: normalizedDomains })
+      .where(eq(workspaces.id, workspaceId))
+      .returning();
+
+    if (!updatedWorkspace) {
+      return c.json({ error: 'Account workspace not found' }, 404);
+    }
+
+    await db
+      .update(agents)
+      .set({ allowedDomains: normalizedDomains, updatedAt: new Date() })
+      .where(eq(agents.workspaceId, workspaceId));
+
+    return c.json({
+      settings: {
+        allowedDomains: updatedWorkspace.allowedDomains ?? [],
+      },
+    });
+  });
+
   admin.get('/provider-keys', async (c) => {
     const { workspaceId } = c.get('authUser');
     const rows = await db.query.providerKeys.findMany({
@@ -177,16 +504,7 @@ export function registerRoutes(app: Hono, deps: RouteDeps): void {
     });
     // NEVER return encryptedApiKey or plaintext apiKey
     return c.json({
-      items: rows.map((r) => ({
-        id: r.id,
-        provider: r.provider,
-        purpose: r.purpose,
-        label: r.label,
-        keyLast4: r.keyLast4,
-        baseUrl: r.baseUrl,
-        defaultModel: r.defaultModel,
-        createdAt: r.createdAt,
-      })),
+      items: rows.map(sanitizeProviderKey),
     });
   });
 
@@ -221,21 +539,30 @@ export function registerRoutes(app: Hono, deps: RouteDeps): void {
       })
       .returning();
 
-    return c.json(
-      {
-        item: {
-          id: created!.id,
-          provider: created!.provider,
-          purpose: created!.purpose,
-          label: created!.label,
-          keyLast4: created!.keyLast4,
-          baseUrl: created!.baseUrl,
-          defaultModel: created!.defaultModel,
-          createdAt: created!.createdAt,
-        },
-      },
-      201
-    );
+    if (parsed.data.activate === true && created) {
+      if (parsed.data.purpose === 'chat') {
+        const patch: Partial<typeof workspaces.$inferInsert> = {
+          chatProviderKeyId: created.id,
+        };
+        if (parsed.data.defaultModel) {
+          patch.chatModel = parsed.data.defaultModel;
+        }
+        await db.update(workspaces).set(patch).where(eq(workspaces.id, workspaceId));
+        if (parsed.data.defaultModel) {
+          await db
+            .update(agents)
+            .set({ chatModel: parsed.data.defaultModel, updatedAt: new Date() })
+            .where(eq(agents.workspaceId, workspaceId));
+        }
+      } else {
+        await db
+          .update(workspaces)
+          .set({ embeddingProviderKeyId: created.id })
+          .where(eq(workspaces.id, workspaceId));
+      }
+    }
+
+    return c.json({ item: sanitizeProviderKey(created!) }, 201);
   });
 
   admin.delete('/provider-keys/:id', async (c) => {
@@ -249,45 +576,51 @@ export function registerRoutes(app: Hono, deps: RouteDeps): void {
   // --- Agents ---
   admin.get('/agents', async (c) => {
     const { workspaceId } = c.get('authUser');
-    const rows = await db.query.agents.findMany({
-      where: eq(agents.workspaceId, workspaceId),
-      orderBy: [desc(agents.createdAt)],
-    });
+    const [workspace, rows] = await Promise.all([
+      db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId) }),
+      db.query.agents.findMany({
+        where: eq(agents.workspaceId, workspaceId),
+        orderBy: [desc(agents.createdAt)],
+      }),
+    ]);
+    const wsDomains = Array.isArray(workspace?.allowedDomains) ? workspace.allowedDomains : [];
     return c.json({
-      items: rows.map(({ widgetJwtSecretEncrypted: _s, ...safe }) => safe),
+      items: rows.map(({ widgetJwtSecretEncrypted: _s, ...safe }) => ({
+        ...safe,
+        chatModel: workspace?.chatModel ?? safe.chatModel,
+        embeddingModel: workspace?.embeddingModel ?? safe.embeddingModel,
+        allowedDomains: wsDomains.length > 0 ? wsDomains : safe.allowedDomains,
+      })),
     });
   });
 
-  async function validateWorkspaceKeyRef(
-    keyId: string | null | undefined,
-    workspaceId: string
-  ): Promise<boolean> {
-    if (!keyId) return true;
-    const row = await db.query.providerKeys.findFirst({
-      where: and(eq(providerKeys.id, keyId), eq(providerKeys.workspaceId, workspaceId)),
-    });
-    return Boolean(row);
-  }
-
   admin.post('/agents', async (c) => {
     const { workspaceId } = c.get('authUser');
-    const parsed = CreateAgentSchema.safeParse(await c.req.json().catch(() => null));
+    const rawBody = await c.req.json().catch(() => null);
+    const parsed = CreateAgentSchema.safeParse(rawBody);
     if (!parsed.success) {
       return c.json({ error: 'Validation failed', details: parsed.error.flatten() }, 400);
     }
-    const [chatKeyOk, embKeyOk] = await Promise.all([
-      validateWorkspaceKeyRef(parsed.data.chatProviderKeyId, workspaceId),
-      validateWorkspaceKeyRef(parsed.data.embeddingProviderKeyId, workspaceId),
-    ]);
-    if (!chatKeyOk || !embKeyOk) {
-      return c.json({ error: 'Provider key not found in workspace' }, 400);
-    }
+    const workspace = await db.query.workspaces.findFirst({
+      where: eq(workspaces.id, workspaceId),
+    });
+    const wsDomains = Array.isArray(workspace?.allowedDomains) ? workspace.allowedDomains : [];
+    const hasExplicitDomains =
+      rawBody && typeof rawBody === 'object' && Array.isArray((rawBody as any).allowedDomains);
+    const resolvedDomains =
+      wsDomains.length > 0 && !hasExplicitDomains ? wsDomains : parsed.data.allowedDomains;
+
     const widgetJwtSecret = generateRandomToken(32);
     const [created] = await db
       .insert(agents)
       .values({
         workspaceId,
         ...parsed.data,
+        allowedDomains: resolvedDomains,
+        chatProviderKeyId: null,
+        embeddingProviderKeyId: null,
+        chatModel: workspace?.chatModel ?? config.defaultChatModel,
+        embeddingModel: workspace?.embeddingModel ?? config.defaultEmbeddingModel,
         widgetJwtSecretEncrypted: crypto.encrypt(widgetJwtSecret),
       })
       .returning();
@@ -297,12 +630,23 @@ export function registerRoutes(app: Hono, deps: RouteDeps): void {
 
   admin.get('/agents/:agentId', async (c) => {
     const { workspaceId } = c.get('authUser');
-    const row = await db.query.agents.findFirst({
-      where: and(eq(agents.id, c.req.param('agentId')), eq(agents.workspaceId, workspaceId)),
-    });
+    const [workspace, row] = await Promise.all([
+      db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId) }),
+      db.query.agents.findFirst({
+        where: and(eq(agents.id, c.req.param('agentId')), eq(agents.workspaceId, workspaceId)),
+      }),
+    ]);
     if (!row) return c.json({ error: 'Agent not found' }, 404);
+    const wsDomains = Array.isArray(workspace?.allowedDomains) ? workspace.allowedDomains : [];
     const { widgetJwtSecretEncrypted: _s, ...safe } = row;
-    return c.json({ item: safe });
+    return c.json({
+      item: {
+        ...safe,
+        chatModel: workspace?.chatModel ?? safe.chatModel,
+        embeddingModel: workspace?.embeddingModel ?? safe.embeddingModel,
+        allowedDomains: wsDomains.length > 0 ? wsDomains : safe.allowedDomains,
+      },
+    });
   });
 
   admin.patch('/agents/:agentId', async (c) => {
@@ -312,53 +656,28 @@ export function registerRoutes(app: Hono, deps: RouteDeps): void {
     if (!parsed.success) {
       return c.json({ error: 'Validation failed', details: parsed.error.flatten() }, 400);
     }
-    const [chatKeyOk, embKeyOk] = await Promise.all([
-      validateWorkspaceKeyRef(parsed.data.chatProviderKeyId, workspaceId),
-      validateWorkspaceKeyRef(parsed.data.embeddingProviderKeyId, workspaceId),
+    const [existing, workspace] = await Promise.all([
+      db.query.agents.findFirst({
+        where: and(eq(agents.id, agentId), eq(agents.workspaceId, workspaceId)),
+      }),
+      db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId) }),
     ]);
-    if (!chatKeyOk || !embKeyOk) {
-      return c.json({ error: 'Provider key not found in workspace' }, 400);
-    }
-    const existing = await db.query.agents.findFirst({
-      where: and(eq(agents.id, agentId), eq(agents.workspaceId, workspaceId)),
-    });
     if (!existing) return c.json({ error: 'Agent not found' }, 404);
 
-    // Block embedding model change without explicit reindex confirmation if chunks already exist
-    if (parsed.data.embeddingModel && parsed.data.embeddingModel !== existing.embeddingModel) {
-      const mismatch = await checkEmbeddingModelMismatch(db, agentId, parsed.data.embeddingModel);
-      if (mismatch.hasIndexedChunks && !parsed.data.confirmReindex) {
-        return c.json(
-          {
-            error: 'EMBEDDING_REINDEX_REQUIRED',
-            message: `This agent has ${mismatch.chunkCount} chunks indexed with "${mismatch.currentModel}". Confirm reindex to switch to "${parsed.data.embeddingModel}".`,
-            currentModel: mismatch.currentModel,
-            chunkCount: mismatch.chunkCount,
-          },
-          409
-        );
-      }
-    }
-
-    const { confirmReindex, ...updateData } = parsed.data;
     const [updated] = await db
       .update(agents)
-      .set({ ...updateData, updatedAt: new Date() })
+      .set({ ...parsed.data, updatedAt: new Date() })
       .where(and(eq(agents.id, agentId), eq(agents.workspaceId, workspaceId)))
       .returning();
 
-    // If embedding model changed with confirmReindex, enqueue re-indexing of all sources
-    if (confirmReindex && parsed.data.embeddingModel && parsed.data.embeddingModel !== existing.embeddingModel) {
-      const sources = await db.query.knowledgeSources.findMany({
-        where: and(eq(knowledgeSources.agentId, agentId), eq(knowledgeSources.workspaceId, workspaceId)),
-      });
-      for (const s of sources) {
-        await jobs.enqueueKnowledgeIngest({ sourceId: s.id, workspaceId, agentId });
-      }
-    }
-
     const { widgetJwtSecretEncrypted: _s, ...safe } = updated!;
-    return c.json({ item: safe });
+    return c.json({
+      item: {
+        ...safe,
+        chatModel: workspace?.chatModel ?? safe.chatModel,
+        embeddingModel: workspace?.embeddingModel ?? safe.embeddingModel,
+      },
+    });
   });
 
   admin.delete('/agents/:agentId', async (c) => {
@@ -1036,9 +1355,14 @@ export function registerRoutes(app: Hono, deps: RouteDeps): void {
     if (!agentId) return c.json({ error: 'Agent not found' }, 404);
     const agent = await db.query.agents.findFirst({ where: eq(agents.id, agentId) });
     if (!agent) return c.json({ error: 'Agent not found' }, 404);
+    const workspace = await db.query.workspaces.findFirst({
+      where: eq(workspaces.id, agent.workspaceId),
+      columns: { allowedDomains: true },
+    });
 
     const origin = c.req.header('origin');
-    const allowed = agent.allowedDomains ?? [];
+    const wsDomains = Array.isArray(workspace?.allowedDomains) ? workspace.allowedDomains : [];
+    const allowed = wsDomains.length > 0 ? wsDomains : (agent.allowedDomains ?? []);
     // If Origin header is sent (browser cross-origin request), strictly enforce allowlist
     if (origin) {
       if (!isOriginAllowed(origin, allowed)) {

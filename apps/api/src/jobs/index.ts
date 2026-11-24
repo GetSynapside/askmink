@@ -2,7 +2,7 @@ import PgBoss from 'pg-boss';
 import { and, eq } from 'drizzle-orm';
 import type { Pool } from 'pg';
 import type { AskminkDb } from '@askmink/db';
-import { agents, knowledgeSources, outboundWebhooks, providerKeys } from '@askmink/db';
+import { agents, knowledgeSources, outboundWebhooks, providerKeys, workspaces } from '@askmink/db';
 import type { AIProvider, WebhookEvent } from '@askmink/shared';
 import type { AppConfig } from '../config.js';
 import { CryptoService, signHmacSha256 } from '../crypto/encryption.js';
@@ -52,7 +52,7 @@ export class JobRunner {
   ) {
     this.boss = new PgBoss({
       connectionString: config.databaseUrl,
-      schema: 'pgboss',
+      schema: config.pgbossSchema ?? 'pgboss',
     });
   }
 
@@ -134,11 +134,16 @@ export class JobRunner {
     const agent = await this.db.query.agents.findFirst({ where: eq(agents.id, agentId) });
     if (!agent) throw new Error('Agent not found');
 
-    if (agent.embeddingProviderKeyId) {
+    const workspace = await this.db.query.workspaces.findFirst({
+      where: eq(workspaces.id, agent.workspaceId),
+    });
+
+    if (workspace?.embeddingProviderKeyId) {
       const keyRow = await this.db.query.providerKeys.findFirst({
         where: and(
-          eq(providerKeys.id, agent.embeddingProviderKeyId),
-          eq(providerKeys.workspaceId, agent.workspaceId)
+          eq(providerKeys.id, workspace.embeddingProviderKeyId),
+          eq(providerKeys.workspaceId, agent.workspaceId),
+          eq(providerKeys.purpose, 'embedding')
         ),
       });
       if (keyRow) {
@@ -146,17 +151,23 @@ export class JobRunner {
           provider: keyRow.provider as AIProvider,
           apiKey: this.crypto.decrypt(keyRow.encryptedApiKey),
           baseUrl: keyRow.baseUrl,
-          model: agent.embeddingModel || keyRow.defaultModel || this.config.defaultEmbeddingModel,
+          model:
+            workspace.embeddingModel ||
+            keyRow.defaultModel ||
+            agent.embeddingModel ||
+            this.config.defaultEmbeddingModel,
         };
       }
     }
+
+    const activeModel = workspace?.embeddingModel || agent.embeddingModel || this.config.defaultEmbeddingModel;
 
     if (this.config.aiGatewayApiKey) {
       return {
         provider: 'vercel-ai-gateway',
         apiKey: this.config.aiGatewayApiKey,
         baseUrl: this.config.aiGatewayBaseUrl,
-        model: agent.embeddingModel || this.config.defaultEmbeddingModel,
+        model: activeModel,
       };
     }
 
@@ -164,11 +175,11 @@ export class JobRunner {
       return {
         provider: 'mock',
         apiKey: 'mock',
-        model: agent.embeddingModel || this.config.defaultEmbeddingModel,
+        model: activeModel,
       };
     }
 
-    throw new Error('No embedding provider key configured for this agent');
+    throw new Error('No global embedding provider key configured for this account');
   }
 
   async handleKnowledgeIngest(job: KnowledgeIngestJob): Promise<void> {

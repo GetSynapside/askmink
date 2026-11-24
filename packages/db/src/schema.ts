@@ -8,6 +8,7 @@ import {
   jsonb,
   customType,
   uniqueIndex,
+  type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import type { HttpToolParam, MessagePart, UrlRule } from '@askmink/shared';
@@ -59,6 +60,16 @@ export const workspaces = pgTable('workspaces', {
   ownerId: uuid('owner_id')
     .notNull()
     .references(() => users.id, { onDelete: 'cascade' }),
+  chatProviderKeyId: uuid('chat_provider_key_id').references((): AnyPgColumn => providerKeys.id, {
+    onDelete: 'set null',
+  }),
+  chatModel: text('chat_model').notNull().default('tencent/hy4-flash'),
+  embeddingProviderKeyId: uuid('embedding_provider_key_id').references(
+    (): AnyPgColumn => providerKeys.id,
+    { onDelete: 'set null' }
+  ),
+  embeddingModel: text('embedding_model').notNull().default('alibaba/qwen3-embedding-0.6b'),
+  allowedDomains: jsonb('allowed_domains').$type<string[]>().notNull().default([]),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
 

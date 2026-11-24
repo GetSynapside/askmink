@@ -15,7 +15,22 @@ import {
   X,
 } from 'lucide-react';
 import type { SupportedLanguage } from '@askmink/shared';
-import { apiRequest } from '../lib/api';
+import { apiRequest } from '@/lib/api';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { Separator } from '@/components/ui/separator';
+import { Switch } from '@/components/ui/switch';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Textarea } from '@/components/ui/textarea';
 
 interface WidgetStudioViewProps {
   agent: any;
@@ -47,13 +62,13 @@ interface PreviewMsg {
 }
 
 const COLOR_PRESETS = [
-  '#2563EB', // Blue
-  '#18181B', // Graphite
-  '#4F46E5', // Indigo
-  '#059669', // Emerald
-  '#E11D48', // Rose
-  '#D97706', // Amber
-  '#0891B2', // Cyan
+  '#2563EB',
+  '#18181B',
+  '#4F46E5',
+  '#059669',
+  '#E11D48',
+  '#D97706',
+  '#0891B2',
 ];
 
 const DEFAULT_STARTERS: Record<SupportedLanguage, string> = {
@@ -105,7 +120,6 @@ function readLocalPrefs(agentId: string, lang: SupportedLanguage): LocalWidgetPr
 }
 
 export function WidgetStudioView({ agent, lang, t, onAgentUpdated }: WidgetStudioViewProps) {
-  // Persisted DB fields (via PATCH /api/agents/:agentId)
   const [name, setName] = useState<string>(agent.name || 'Askmink');
   const [welcomeMessage, setWelcomeMessage] = useState<string>(
     agent.welcomeMessage || 'Hi! How can I help you today?'
@@ -116,21 +130,17 @@ export function WidgetStudioView({ agent, lang, t, onAgentUpdated }: WidgetStudi
   const [primaryColor, setPrimaryColor] = useState<string>(agent.primaryColor || '#2563EB');
   const [showBranding, setShowBranding] = useState<boolean>(agent.showBranding !== false);
 
-  // Embed appearance options (saved locally & encoded into script data-* attributes)
   const [prefs, setPrefs] = useState<LocalWidgetPrefs>(() => readLocalPrefs(agent.id, lang));
 
-  // Preview controls
   const [viewport, setViewport] = useState<'desktop' | 'mobile'>('desktop');
   const [widgetOpen, setWidgetOpen] = useState(true);
   const [hostTheme, setHostTheme] = useState<'light' | 'dark'>('light');
   const [previewMode, setPreviewMode] = useState<'live' | 'cards'>('live');
 
-  // Save & copy UI feedback
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const [copiedEmbed, setCopiedEmbed] = useState(false);
 
-  // Live preview chat state
   const [conversationId, setConversationId] = useState<string | undefined>(undefined);
   const [messages, setMessages] = useState<PreviewMsg[]>([
     {
@@ -144,7 +154,6 @@ export function WidgetStudioView({ agent, lang, t, onAgentUpdated }: WidgetStudi
   const [selectedDemoSlot, setSelectedDemoSlot] = useState(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // Sync form when switching active agent
   useEffect(() => {
     setName(agent.name || 'Askmink');
     setWelcomeMessage(agent.welcomeMessage || 'Hi! How can I help you today?');
@@ -163,14 +172,12 @@ export function WidgetStudioView({ agent, lang, t, onAgentUpdated }: WidgetStudi
     setNotice(null);
   }, [agent.id]);
 
-  // Keep welcome bubble synchronized in real time while editing
   useEffect(() => {
     setMessages((prev) =>
       prev.map((m) => (m.id === 'welcome' ? { ...m, text: welcomeMessage || '...' } : m))
     );
   }, [welcomeMessage]);
 
-  // Persist local embed appearance prefs per agent
   useEffect(() => {
     try {
       localStorage.setItem(`askmink_widget_prefs_${agent.id}`, JSON.stringify(prefs));
@@ -364,92 +371,69 @@ export function WidgetStudioView({ agent, lang, t, onAgentUpdated }: WidgetStudi
   return (
     <div className="flex-1 flex flex-col lg:flex-row min-h-0 overflow-hidden">
       {/* Left Inspector: Customization Controls */}
-      <aside className="w-full lg:w-[370px] xl:w-[400px] bg-white border-b lg:border-b-0 lg:border-r border-[#EAECEF] flex flex-col shrink-0 max-h-[48vh] lg:max-h-none">
-        <div className="px-5 py-4 border-b border-[#EAECEF] shrink-0">
-          <h1 className="text-sm font-semibold text-[#111827]">{t.widgetStudioTitle}</h1>
-          <p className="text-xs text-[#6B7280] mt-0.5">{t.widgetStudioSubtitle}</p>
+      <aside className="w-full lg:w-[370px] xl:w-[400px] bg-card border-b lg:border-b-0 lg:border-r border-border flex flex-col shrink-0 max-h-[48vh] lg:max-h-none">
+        <div className="px-5 py-4 border-b border-border shrink-0">
+          <h1 className="text-base font-semibold text-foreground tracking-tight">
+            {t.widgetStudioTitle}
+          </h1>
+          <p className="text-xs text-muted-foreground mt-0.5">{t.widgetStudioSubtitle}</p>
         </div>
 
         <div className="flex-1 overflow-y-auto sidebar-scroll p-5 space-y-6">
           {notice && (
-            <div
-              role="status"
-              className={`px-3 py-2 rounded-lg text-xs font-medium ${
-                notice.type === 'ok'
-                  ? 'bg-[#ECFDF5] text-[#047857] border border-[#D1FAE5]'
-                  : 'bg-[#FEF2F2] text-[#B91C1C] border border-[#FECACA]'
-              }`}
-            >
-              {notice.text}
-            </div>
+            <Alert variant={notice.type === 'ok' ? 'success' : 'destructive'}>
+              <AlertDescription className="font-medium">{notice.text}</AlertDescription>
+            </Alert>
           )}
 
           {/* Section 1: Identity & Copy */}
           <div className="space-y-3.5">
-            <h2 className="text-[11px] font-semibold uppercase tracking-wider text-[#6B7280]">
+            <h2 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
               {t.sectionIdentity}
             </h2>
 
-            <div>
-              <label
-                htmlFor="widget-name-input"
-                className="block text-xs font-medium text-[#374151] mb-1"
-              >
-                {t.widgetNameLabel}
-              </label>
-              <input
+            <div className="space-y-1.5">
+              <Label htmlFor="widget-name-input">{t.widgetNameLabel}</Label>
+              <Input
                 id="widget-name-input"
                 type="text"
                 maxLength={100}
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                className="w-full text-xs px-3 py-2 rounded-lg border border-[#E5E7EB] bg-white text-[#111827]"
               />
             </div>
 
-            <div>
-              <label
-                htmlFor="widget-welcome-input"
-                className="block text-xs font-medium text-[#374151] mb-1"
-              >
-                {t.welcomeMessageLabel}
-              </label>
-              <textarea
+            <div className="space-y-1.5">
+              <Label htmlFor="widget-welcome-input">{t.welcomeMessageLabel}</Label>
+              <Textarea
                 id="widget-welcome-input"
                 rows={2}
                 maxLength={500}
                 value={welcomeMessage}
                 onChange={(e) => setWelcomeMessage(e.target.value)}
-                className="w-full text-xs px-3 py-2 rounded-lg border border-[#E5E7EB] bg-white text-[#111827] resize-none"
+                className="resize-none"
               />
             </div>
 
-            <div>
-              <label
-                htmlFor="widget-lang-select"
-                className="block text-xs font-medium text-[#374151] mb-1"
-              >
-                {t.widgetDefaultLangLabel}
-              </label>
-              <select
-                id="widget-lang-select"
+            <div className="space-y-1.5">
+              <Label htmlFor="widget-lang-select">{t.widgetDefaultLangLabel}</Label>
+              <Select
                 value={defaultLanguage}
-                onChange={(e) => setDefaultLanguage(e.target.value as SupportedLanguage)}
-                className="w-full text-xs px-3 py-2 rounded-lg border border-[#E5E7EB] bg-white text-[#111827]"
+                onValueChange={(v) => setDefaultLanguage(v as SupportedLanguage)}
               >
-                <option value="en">English (EN)</option>
-                <option value="pt">Português (PT)</option>
-                <option value="es">Español (ES)</option>
-              </select>
+                <SelectTrigger id="widget-lang-select">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="en">English (EN)</SelectItem>
+                  <SelectItem value="pt">Português (PT)</SelectItem>
+                  <SelectItem value="es">Español (ES)</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
 
-            <div>
-              <label
-                htmlFor="widget-color-hex"
-                className="block text-xs font-medium text-[#374151] mb-1.5"
-              >
-                {t.primaryColorLabel}
-              </label>
+            <div className="space-y-1.5">
+              <Label htmlFor="widget-color-hex">{t.primaryColorLabel}</Label>
               <div className="flex items-center gap-2 flex-wrap">
                 {COLOR_PRESETS.map((hex) => {
                   const selected = validHex.toLowerCase() === hex.toLowerCase();
@@ -460,14 +444,14 @@ export function WidgetStudioView({ agent, lang, t, onAgentUpdated }: WidgetStudi
                       onClick={() => setPrimaryColor(hex)}
                       aria-label={hex}
                       aria-pressed={selected}
-                      className={`w-7 h-7 rounded-full border transition flex items-center justify-center ${
+                      className={`size-7 rounded-full border transition flex items-center justify-center cursor-pointer ${
                         selected
-                          ? 'ring-2 ring-offset-2 ring-[#111827] border-transparent'
+                          ? 'ring-2 ring-offset-2 ring-foreground border-transparent'
                           : 'border-black/15 hover:scale-105'
                       }`}
                       style={{ backgroundColor: hex }}
                     >
-                      {selected && <Check className="w-3.5 h-3.5 text-white" aria-hidden="true" />}
+                      {selected && <Check className="size-3.5 text-white" aria-hidden="true" />}
                     </button>
                   );
                 })}
@@ -477,137 +461,121 @@ export function WidgetStudioView({ agent, lang, t, onAgentUpdated }: WidgetStudi
                     aria-label={t.primaryColorLabel}
                     value={validHex}
                     onChange={(e) => setPrimaryColor(e.target.value)}
-                    className="w-7 h-7 p-0.5 rounded-lg border border-[#E5E7EB] bg-white cursor-pointer"
+                    className="size-7 p-0.5 rounded-lg border border-input bg-background cursor-pointer"
                   />
                 </label>
-                <input
+                <Input
                   id="widget-color-hex"
                   type="text"
                   value={primaryColor}
                   onChange={(e) => setPrimaryColor(e.target.value)}
                   maxLength={7}
-                  className="w-20 text-xs font-mono px-2 py-1.5 rounded-lg border border-[#E5E7EB] text-[#111827]"
+                  className="w-20 font-mono"
                 />
               </div>
             </div>
 
-            <label
-              htmlFor="widget-branding-switch"
-              className="flex items-center justify-between gap-3 pt-1 cursor-pointer"
-            >
-              <span className="text-xs font-medium text-[#374151]">{t.showBrandingLabel}</span>
-              <input
+            <div className="flex items-center justify-between gap-3 pt-1">
+              <Label htmlFor="widget-branding-switch" className="cursor-pointer">
+                {t.showBrandingLabel}
+              </Label>
+              <Switch
                 id="widget-branding-switch"
-                type="checkbox"
                 checked={showBranding}
-                onChange={(e) => setShowBranding(e.target.checked)}
-                {...({ switch: '' } as any)}
-                className="w-4 h-4 rounded"
+                onCheckedChange={setShowBranding}
               />
-            </label>
+            </div>
           </div>
 
+          <Separator />
+
           {/* Section 2: Appearance & Layout */}
-          <div className="space-y-3.5 pt-4 border-t border-[#F3F4F6]">
-            <h2 className="text-[11px] font-semibold uppercase tracking-wider text-[#6B7280]">
+          <div className="space-y-3.5">
+            <h2 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
               {t.sectionAppearance}
             </h2>
 
             {/* Theme */}
-            <div>
-              <span className="block text-xs font-medium text-[#374151] mb-1.5">
-                {t.themeLabel}
-              </span>
-              <div className="grid grid-cols-2 gap-2">
+            <div className="space-y-1.5">
+              <div className="text-xs font-medium text-foreground">{t.themeLabel}</div>
+              <div className="grid grid-cols-2 gap-2" role="group" aria-label={t.themeLabel}>
                 {(['light', 'dark'] as const).map((mode) => (
-                  <button
+                  <Button
                     key={mode}
                     type="button"
+                    variant={prefs.theme === mode ? 'default' : 'outline'}
                     aria-pressed={prefs.theme === mode}
                     onClick={() => setPrefs((p) => ({ ...p, theme: mode }))}
-                    className={`px-3 py-2 rounded-lg text-xs font-medium border flex items-center justify-center gap-1.5 transition ${
-                      prefs.theme === mode
-                        ? 'bg-[#18181B] text-white border-[#18181B]'
-                        : 'bg-white text-[#374151] border-[#E5E7EB] hover:bg-[#F9FAFB]'
-                    }`}
                   >
                     {mode === 'light' ? (
-                      <Sun className="w-3.5 h-3.5" aria-hidden="true" />
+                      <Sun className="size-3.5" aria-hidden="true" />
                     ) : (
-                      <Moon className="w-3.5 h-3.5" aria-hidden="true" />
+                      <Moon className="size-3.5" aria-hidden="true" />
                     )}
                     <span>{mode === 'light' ? t.themeLight : t.themeDark}</span>
-                  </button>
+                  </Button>
                 ))}
               </div>
             </div>
 
             {/* Position */}
-            <div>
-              <span className="block text-xs font-medium text-[#374151] mb-1.5">
-                {t.positionLabel}
-              </span>
-              <div className="grid grid-cols-2 gap-2">
+            <div className="space-y-1.5">
+              <div className="text-xs font-medium text-foreground">{t.positionLabel}</div>
+              <div className="grid grid-cols-2 gap-2" role="group" aria-label={t.positionLabel}>
                 {(
                   [
                     { id: 'bottom-left', label: t.positionLeft },
                     { id: 'bottom-right', label: t.positionRight },
                   ] as const
                 ).map((pos) => (
-                  <button
+                  <Button
                     key={pos.id}
                     type="button"
+                    variant={prefs.position === pos.id ? 'default' : 'outline'}
                     aria-pressed={prefs.position === pos.id}
                     onClick={() => setPrefs((p) => ({ ...p, position: pos.id }))}
-                    className={`px-3 py-2 rounded-lg text-xs font-medium border transition ${
-                      prefs.position === pos.id
-                        ? 'bg-[#18181B] text-white border-[#18181B]'
-                        : 'bg-white text-[#374151] border-[#E5E7EB] hover:bg-[#F9FAFB]'
-                    }`}
                   >
                     {pos.label}
-                  </button>
+                  </Button>
                 ))}
               </div>
             </div>
 
             {/* Launcher style */}
-            <div>
-              <span className="block text-xs font-medium text-[#374151] mb-1.5">
-                {t.launcherStyleLabel}
-              </span>
-              <div className="grid grid-cols-2 gap-2">
+            <div className="space-y-1.5">
+              <div className="text-xs font-medium text-foreground">{t.launcherStyleLabel}</div>
+              <div
+                className="grid grid-cols-2 gap-2"
+                role="group"
+                aria-label={t.launcherStyleLabel}
+              >
                 {(
                   [
                     { id: 'icon', label: t.launcherIcon },
                     { id: 'pill', label: t.launcherPill },
                   ] as const
                 ).map((st) => (
-                  <button
+                  <Button
                     key={st.id}
                     type="button"
+                    variant={prefs.launcherStyle === st.id ? 'default' : 'outline'}
                     aria-pressed={prefs.launcherStyle === st.id}
                     onClick={() => setPrefs((p) => ({ ...p, launcherStyle: st.id }))}
-                    className={`px-3 py-2 rounded-lg text-xs font-medium border transition ${
-                      prefs.launcherStyle === st.id
-                        ? 'bg-[#18181B] text-white border-[#18181B]'
-                        : 'bg-white text-[#374151] border-[#E5E7EB] hover:bg-[#F9FAFB]'
-                    }`}
                   >
                     {st.label}
-                  </button>
+                  </Button>
                 ))}
               </div>
 
               {prefs.launcherStyle === 'pill' && (
-                <div className="mt-2">
-                  <label
+                <div className="mt-2 space-y-1">
+                  <Label
                     htmlFor="launcher-label-input"
-                    className="block text-[11px] text-[#6B7280] mb-1"
+                    className="text-[11px] text-muted-foreground font-normal"
                   >
                     {t.launcherLabelField}
-                  </label>
-                  <input
+                  </Label>
+                  <Input
                     id="launcher-label-input"
                     type="text"
                     maxLength={40}
@@ -615,18 +583,15 @@ export function WidgetStudioView({ agent, lang, t, onAgentUpdated }: WidgetStudi
                     onChange={(e) =>
                       setPrefs((p) => ({ ...p, launcherLabel: e.target.value }))
                     }
-                    className="w-full text-xs px-3 py-1.5 rounded-lg border border-[#E5E7EB] text-[#111827]"
                   />
                 </div>
               )}
             </div>
 
             {/* Corner radius */}
-            <div>
-              <span className="block text-xs font-medium text-[#374151] mb-1.5">
-                {t.cornerRadiusLabel}
-              </span>
-              <div className="grid grid-cols-3 gap-2">
+            <div className="space-y-1.5">
+              <div className="text-xs font-medium text-foreground">{t.cornerRadiusLabel}</div>
+              <div className="grid grid-cols-3 gap-2" role="group" aria-label={t.cornerRadiusLabel}>
                 {(
                   [
                     { id: 'rounded', label: t.radiusRounded },
@@ -634,182 +599,117 @@ export function WidgetStudioView({ agent, lang, t, onAgentUpdated }: WidgetStudi
                     { id: 'sharp', label: t.radiusSharp },
                   ] as const
                 ).map((r) => (
-                  <button
+                  <Button
                     key={r.id}
                     type="button"
+                    size="xs"
+                    variant={prefs.cornerStyle === r.id ? 'default' : 'outline'}
                     aria-pressed={prefs.cornerStyle === r.id}
                     onClick={() => setPrefs((p) => ({ ...p, cornerStyle: r.id }))}
-                    className={`px-2 py-1.5 rounded-lg text-xs font-medium border transition ${
-                      prefs.cornerStyle === r.id
-                        ? 'bg-[#18181B] text-white border-[#18181B]'
-                        : 'bg-white text-[#374151] border-[#E5E7EB] hover:bg-[#F9FAFB]'
-                    }`}
                   >
                     {r.label}
-                  </button>
+                  </Button>
                 ))}
               </div>
             </div>
           </div>
 
+          <Separator />
+
           {/* Section 3: Quick Starter Prompts */}
-          <div className="space-y-2 pt-4 border-t border-[#F3F4F6]">
-            <label
+          <div className="space-y-2">
+            <Label
               htmlFor="starter-prompts-textarea"
-              className="block text-[11px] font-semibold uppercase tracking-wider text-[#6B7280]"
+              className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground"
             >
               {t.sectionStarterPrompts}
-            </label>
-            <p className="text-[11px] text-[#6B7280]">{t.starterPromptsHint}</p>
-            <textarea
+            </Label>
+            <p className="text-[11px] text-muted-foreground">{t.starterPromptsHint}</p>
+            <Textarea
               id="starter-prompts-textarea"
               rows={2}
               value={prefs.starterPromptsText}
               onChange={(e) =>
                 setPrefs((p) => ({ ...p, starterPromptsText: e.target.value }))
               }
-              className="w-full text-xs px-3 py-2 rounded-lg border border-[#E5E7EB] bg-white text-[#111827] resize-none"
+              className="resize-none"
             />
           </div>
         </div>
 
         {/* Sticky Save Bar */}
-        <div className="p-4 border-t border-[#EAECEF] bg-[#FAFAFB] flex items-center justify-between gap-2 shrink-0">
-          <span className="text-[11px] text-[#6B7280]">
+        <div className="p-4 border-t border-border bg-muted/30 flex items-center justify-between gap-2 shrink-0">
+          <span className="text-[11px] text-muted-foreground">
             {isDirty ? t.unsavedChanges : t.online}
           </span>
-          <button
-            type="button"
-            onClick={handleSave}
-            disabled={saving}
-            className="px-4 py-2 rounded-lg bg-[#18181B] hover:bg-[#27272A] disabled:opacity-50 text-white text-xs font-medium inline-flex items-center gap-1.5 transition"
-          >
-            <Save className="w-3.5 h-3.5" aria-hidden="true" />
+          <Button type="button" onClick={handleSave} disabled={saving}>
+            <Save className="size-3.5" aria-hidden="true" />
             <span>{saving ? t.saving : t.saveChanges}</span>
-          </button>
+          </Button>
         </div>
       </aside>
 
       {/* Right Stage: Live Host-Site Canvas & Interactive Widget */}
-      <div className="flex-1 flex flex-col min-w-0 bg-[#F3F4F6]/70 overflow-hidden">
+      <div className="flex-1 flex flex-col min-w-0 bg-muted/50 overflow-hidden">
         {/* Stage Toolbar */}
-        <div className="px-4 py-2.5 bg-white border-b border-[#EAECEF] flex flex-wrap items-center justify-between gap-2 shrink-0">
+        <div className="px-4 py-2.5 bg-card border-b border-border flex flex-wrap items-center justify-between gap-2 shrink-0">
           <div className="flex items-center gap-2 flex-wrap">
-            {/* Viewport switch */}
-            <div className="inline-flex p-0.5 rounded-lg bg-[#F3F4F6] border border-[#EAECEF]">
-              <button
-                type="button"
-                aria-pressed={viewport === 'desktop'}
-                onClick={() => setViewport('desktop')}
-                className={`px-2.5 py-1 rounded-md text-xs font-medium inline-flex items-center gap-1.5 transition ${
-                  viewport === 'desktop'
-                    ? 'bg-white text-[#111827] shadow-2xs'
-                    : 'text-[#6B7280] hover:text-[#111827]'
-                }`}
-              >
-                <Monitor className="w-3.5 h-3.5" aria-hidden="true" />
-                <span>{t.previewDesktop}</span>
-              </button>
-              <button
-                type="button"
-                aria-pressed={viewport === 'mobile'}
-                onClick={() => setViewport('mobile')}
-                className={`px-2.5 py-1 rounded-md text-xs font-medium inline-flex items-center gap-1.5 transition ${
-                  viewport === 'mobile'
-                    ? 'bg-white text-[#111827] shadow-2xs'
-                    : 'text-[#6B7280] hover:text-[#111827]'
-                }`}
-              >
-                <Smartphone className="w-3.5 h-3.5" aria-hidden="true" />
-                <span>{t.previewMobile}</span>
-              </button>
-            </div>
+            <Tabs value={viewport} onValueChange={(v) => setViewport(v as 'desktop' | 'mobile')}>
+              <TabsList>
+                <TabsTrigger value="desktop">
+                  <Monitor className="size-3.5" aria-hidden="true" />
+                  <span>{t.previewDesktop}</span>
+                </TabsTrigger>
+                <TabsTrigger value="mobile">
+                  <Smartphone className="size-3.5" aria-hidden="true" />
+                  <span>{t.previewMobile}</span>
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
 
-            {/* Open / Closed toggle */}
-            <div className="inline-flex p-0.5 rounded-lg bg-[#F3F4F6] border border-[#EAECEF]">
-              <button
-                type="button"
-                aria-pressed={widgetOpen}
-                onClick={() => setWidgetOpen(true)}
-                className={`px-2.5 py-1 rounded-md text-xs font-medium transition ${
-                  widgetOpen
-                    ? 'bg-white text-[#111827] shadow-2xs'
-                    : 'text-[#6B7280] hover:text-[#111827]'
-                }`}
-              >
-                {t.previewOpen}
-              </button>
-              <button
-                type="button"
-                aria-pressed={!widgetOpen}
-                onClick={() => setWidgetOpen(false)}
-                className={`px-2.5 py-1 rounded-md text-xs font-medium transition ${
-                  !widgetOpen
-                    ? 'bg-white text-[#111827] shadow-2xs'
-                    : 'text-[#6B7280] hover:text-[#111827]'
-                }`}
-              >
-                {t.previewClosed}
-              </button>
-            </div>
+            <Tabs
+              value={widgetOpen ? 'open' : 'closed'}
+              onValueChange={(v) => setWidgetOpen(v === 'open')}
+            >
+              <TabsList>
+                <TabsTrigger value="open">{t.previewOpen}</TabsTrigger>
+                <TabsTrigger value="closed">{t.previewClosed}</TabsTrigger>
+              </TabsList>
+            </Tabs>
 
-            {/* Live Chat vs UI Cards Showcase */}
-            <div className="inline-flex p-0.5 rounded-lg bg-[#F3F4F6] border border-[#EAECEF]">
-              <button
-                type="button"
-                aria-pressed={previewMode === 'live'}
-                onClick={() => {
-                  setPreviewMode('live');
-                  setWidgetOpen(true);
-                }}
-                className={`px-2.5 py-1 rounded-md text-xs font-medium transition ${
-                  previewMode === 'live'
-                    ? 'bg-white text-[#111827] shadow-2xs'
-                    : 'text-[#6B7280] hover:text-[#111827]'
-                }`}
-              >
-                {t.previewModeLive}
-              </button>
-              <button
-                type="button"
-                aria-pressed={previewMode === 'cards'}
-                onClick={() => {
-                  setPreviewMode('cards');
-                  setWidgetOpen(true);
-                }}
-                className={`px-2.5 py-1 rounded-md text-xs font-medium transition ${
-                  previewMode === 'cards'
-                    ? 'bg-white text-[#111827] shadow-2xs'
-                    : 'text-[#6B7280] hover:text-[#111827]'
-                }`}
-              >
-                {t.previewModeCards}
-              </button>
-            </div>
+            <Tabs
+              value={previewMode}
+              onValueChange={(v) => {
+                setPreviewMode(v as 'live' | 'cards');
+                setWidgetOpen(true);
+              }}
+            >
+              <TabsList>
+                <TabsTrigger value="live">{t.previewModeLive}</TabsTrigger>
+                <TabsTrigger value="cards">{t.previewModeCards}</TabsTrigger>
+              </TabsList>
+            </Tabs>
           </div>
 
           <div className="flex items-center gap-2">
-            <button
+            <Button
               type="button"
+              variant="outline"
+              size="xs"
               onClick={() => setHostTheme((h) => (h === 'light' ? 'dark' : 'light'))}
-              className="px-2.5 py-1.5 rounded-lg border border-[#EAECEF] bg-white hover:bg-[#F9FAFB] text-xs font-medium text-[#374151] inline-flex items-center gap-1.5 transition"
             >
               {hostTheme === 'light' ? (
-                <Moon className="w-3.5 h-3.5" aria-hidden="true" />
+                <Moon className="size-3.5" aria-hidden="true" />
               ) : (
-                <Sun className="w-3.5 h-3.5" aria-hidden="true" />
+                <Sun className="size-3.5" aria-hidden="true" />
               )}
               <span>{hostTheme === 'light' ? t.previewHostDark : t.previewHostLight}</span>
-            </button>
+            </Button>
 
-            <button
-              type="button"
-              onClick={resetChat}
-              className="px-2.5 py-1.5 rounded-lg border border-[#EAECEF] bg-white hover:bg-[#F9FAFB] text-xs font-medium text-[#374151] inline-flex items-center gap-1.5 transition"
-            >
-              <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
+            <Button type="button" variant="outline" size="xs" onClick={resetChat}>
+              <RotateCcw className="size-3.5" aria-hidden="true" />
               <span>{t.resetPreviewChat}</span>
-            </button>
+            </Button>
           </div>
         </div>
 
@@ -823,7 +723,7 @@ export function WidgetStudioView({ agent, lang, t, onAgentUpdated }: WidgetStudi
             } ${
               hostTheme === 'dark'
                 ? 'bg-[#0F172A] border-[#1E293B]'
-                : 'bg-white border-[#E5E7EB]'
+                : 'bg-white border-border'
             }`}
           >
             {/* Mock Browser Chrome */}
@@ -831,19 +731,19 @@ export function WidgetStudioView({ agent, lang, t, onAgentUpdated }: WidgetStudi
               className={`h-9 px-3.5 border-b flex items-center gap-3 shrink-0 ${
                 hostTheme === 'dark'
                   ? 'bg-[#1E293B] border-[#334155]'
-                  : 'bg-[#F9FAFB] border-[#EAECEF]'
+                  : 'bg-[#F9FAFB] border-border'
               }`}
             >
               <div className="flex items-center gap-1.5" aria-hidden="true">
-                <span className="w-2.5 h-2.5 rounded-full bg-[#E5E7EB] dark:bg-[#475569]" />
-                <span className="w-2.5 h-2.5 rounded-full bg-[#E5E7EB] dark:bg-[#475569]" />
-                <span className="w-2.5 h-2.5 rounded-full bg-[#E5E7EB] dark:bg-[#475569]" />
+                <span className="size-2.5 rounded-full bg-[#E5E7EB] dark:bg-[#475569]" />
+                <span className="size-2.5 rounded-full bg-[#E5E7EB] dark:bg-[#475569]" />
+                <span className="size-2.5 rounded-full bg-[#E5E7EB] dark:bg-[#475569]" />
               </div>
               <div
                 className={`flex-1 max-w-xs mx-auto text-center text-[11px] px-3 py-0.5 rounded-md truncate ${
                   hostTheme === 'dark'
                     ? 'bg-[#0F172A] text-[#94A3B8]'
-                    : 'bg-white border border-[#EAECEF] text-[#6B7280]'
+                    : 'bg-white border border-border text-muted-foreground'
                 }`}
               >
                 https://your-website.com/pricing
@@ -855,7 +755,7 @@ export function WidgetStudioView({ agent, lang, t, onAgentUpdated }: WidgetStudi
               <div className="max-w-lg space-y-4 select-none pointer-events-none opacity-80">
                 <div className="flex items-center gap-2">
                   <span
-                    className={`w-6 h-6 rounded-md ${
+                    className={`size-6 rounded-md ${
                       hostTheme === 'dark' ? 'bg-[#334155]' : 'bg-[#E5E7EB]'
                     }`}
                   />
@@ -946,7 +846,7 @@ export function WidgetStudioView({ agent, lang, t, onAgentUpdated }: WidgetStudi
                     >
                       <div className="flex items-center gap-2.5 min-w-0">
                         <div
-                          className="w-8 h-8 rounded-lg text-white font-bold text-xs flex items-center justify-center shrink-0"
+                          className="size-8 rounded-lg text-white font-bold text-xs flex items-center justify-center shrink-0"
                           style={{ backgroundColor: validHex }}
                         >
                           {(name || 'A').slice(0, 1).toUpperCase()}
@@ -957,7 +857,7 @@ export function WidgetStudioView({ agent, lang, t, onAgentUpdated }: WidgetStudi
                           </div>
                           <div className="text-[11px] text-[#16A34A] flex items-center gap-1 mt-0.5">
                             <span
-                              className="w-1.5 h-1.5 rounded-full bg-[#16A34A]"
+                              className="size-1.5 rounded-full bg-[#16A34A]"
                               aria-hidden="true"
                             />
                             <span>{t.online}</span>
@@ -968,13 +868,13 @@ export function WidgetStudioView({ agent, lang, t, onAgentUpdated }: WidgetStudi
                         type="button"
                         onClick={() => setWidgetOpen(false)}
                         aria-label={t.close}
-                        className={`w-7 h-7 rounded-lg flex items-center justify-center transition ${
+                        className={`size-7 rounded-lg flex items-center justify-center transition cursor-pointer ${
                           isDarkWidget
                             ? 'text-[#9CA3AF] hover:bg-[#27272A] hover:text-white'
                             : 'text-[#6B7280] hover:bg-[#F3F4F6] hover:text-[#111827]'
                         }`}
                       >
-                        <X className="w-4 h-4" aria-hidden="true" />
+                        <X className="size-4" aria-hidden="true" />
                       </button>
                     </div>
 
@@ -1082,7 +982,7 @@ export function WidgetStudioView({ agent, lang, t, onAgentUpdated }: WidgetStudi
                                                 }
                                               : undefined
                                           }
-                                          className={`px-2 py-1 text-[11px] rounded-md border text-left transition ${
+                                          className={`px-2 py-1 text-[11px] rounded-md border text-left transition cursor-pointer ${
                                             active
                                               ? 'font-semibold bg-white/80'
                                               : isDarkWidget
@@ -1103,7 +1003,6 @@ export function WidgetStudioView({ agent, lang, t, onAgentUpdated }: WidgetStudi
                         </div>
                       ))}
 
-                      {/* Starter Quick Prompts (when in live mode with only welcome msg) */}
                       {previewMode === 'live' &&
                         messages.length === 1 &&
                         starterPrompts.length > 0 && (
@@ -1113,7 +1012,7 @@ export function WidgetStudioView({ agent, lang, t, onAgentUpdated }: WidgetStudi
                                 key={prompt}
                                 type="button"
                                 onClick={() => sendLiveMessage(prompt)}
-                                className={`text-[11px] px-2.5 py-1.5 rounded-full border transition text-left ${
+                                className={`text-[11px] px-2.5 py-1.5 rounded-full border transition text-left cursor-pointer ${
                                   isDarkWidget
                                     ? 'bg-[#18181B] border-[#27272A] text-[#E5E7EB] hover:border-[#52525B]'
                                     : 'bg-white border-[#E5E7EB] text-[#374151] hover:border-[#9CA3AF]'
@@ -1169,9 +1068,9 @@ export function WidgetStudioView({ agent, lang, t, onAgentUpdated }: WidgetStudi
                         disabled={sending || !chatInput.trim()}
                         aria-label={t.widgetSend}
                         style={{ backgroundColor: validHex, borderRadius: radiusTokens.btn }}
-                        className="px-3 py-2 text-white text-xs font-medium inline-flex items-center justify-center disabled:opacity-50 transition"
+                        className="px-3 py-2 text-white text-xs font-medium inline-flex items-center justify-center disabled:opacity-50 transition cursor-pointer"
                       >
-                        <Send className="w-3.5 h-3.5" aria-hidden="true" />
+                        <Send className="size-3.5" aria-hidden="true" />
                       </button>
                     </form>
 
@@ -1202,17 +1101,17 @@ export function WidgetStudioView({ agent, lang, t, onAgentUpdated }: WidgetStudi
                   className={`text-white shadow-lg hover:brightness-110 transition flex items-center justify-center gap-2 cursor-pointer ${
                     prefs.launcherStyle === 'pill' && !widgetOpen
                       ? 'h-12 px-4 text-xs font-semibold'
-                      : 'w-13 h-13'
+                      : 'size-13'
                   }`}
                 >
                   {widgetOpen ? (
-                    <X className="w-5 h-5" aria-hidden="true" />
+                    <X className="size-5" aria-hidden="true" />
                   ) : (
                     <>
                       {prefs.launcherStyle === 'pill' ? (
-                        <MessageCircle className="w-4 h-4 shrink-0" aria-hidden="true" />
+                        <MessageCircle className="size-4 shrink-0" aria-hidden="true" />
                       ) : (
-                        <Sparkles className="w-5 h-5" aria-hidden="true" />
+                        <Sparkles className="size-5" aria-hidden="true" />
                       )}
                       {prefs.launcherStyle === 'pill' && (
                         <span>{prefs.launcherLabel || DEFAULT_LAUNCHER_LABEL[lang]}</span>
@@ -1226,25 +1125,21 @@ export function WidgetStudioView({ agent, lang, t, onAgentUpdated }: WidgetStudi
         </div>
 
         {/* Bottom Embed Code Strip */}
-        <div className="px-4 py-3 bg-white border-t border-[#EAECEF] flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 shrink-0">
+        <div className="px-4 py-3 bg-card border-t border-border flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 shrink-0">
           <div className="flex items-center gap-2 min-w-0 flex-1">
-            <Code2 className="w-4 h-4 text-[#6B7280] shrink-0" aria-hidden="true" />
-            <code className="text-[11px] font-mono text-[#374151] bg-[#F8F9FB] border border-[#EAECEF] px-2.5 py-1.5 rounded-lg truncate flex-1">
+            <Code2 className="size-4 text-muted-foreground shrink-0" aria-hidden="true" />
+            <code className="text-[11px] font-mono text-foreground bg-muted border border-border px-2.5 py-1.5 rounded-lg truncate flex-1">
               {embedSnippet}
             </code>
           </div>
-          <button
-            type="button"
-            onClick={handleCopyEmbed}
-            className="px-3 py-1.5 rounded-lg bg-[#18181B] hover:bg-[#27272A] text-white text-xs font-medium inline-flex items-center justify-center gap-1.5 shrink-0 transition"
-          >
+          <Button type="button" onClick={handleCopyEmbed} className="shrink-0">
             {copiedEmbed ? (
-              <Check className="w-3.5 h-3.5 text-[#4ADE80]" aria-hidden="true" />
+              <Check className="size-3.5 text-emerald-400" aria-hidden="true" />
             ) : (
-              <Copy className="w-3.5 h-3.5" aria-hidden="true" />
+              <Copy className="size-3.5" aria-hidden="true" />
             )}
             <span>{copiedEmbed ? t.copied : t.copySnippet}</span>
-          </button>
+          </Button>
         </div>
       </div>
     </div>

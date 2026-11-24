@@ -18,7 +18,10 @@ import {
   type WorkflowEdge,
   type WorkflowNode,
   type WorkflowNodeType,
-} from '../lib/workflow';
+} from '@/lib/workflow';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Separator } from '@/components/ui/separator';
 
 const NODE_WIDTH = 256;
 const DEFAULT_NODE_HEIGHT = 124;
@@ -41,27 +44,27 @@ const NODE_THEME: Record<
   { badge: string; accent: string; icon: typeof Play }
 > = {
   start: {
-    badge: 'bg-[#ECFDF5] text-[#047857] border-[#D1FAE5]',
+    badge: 'bg-emerald-50 text-emerald-700 border-emerald-200',
     accent: '#10B981',
     icon: Play,
   },
   step: {
-    badge: 'bg-[#EFF6FF] text-[#1D4ED8] border-[#DBEAFE]',
+    badge: 'bg-blue-50 text-blue-700 border-blue-200',
     accent: '#2563EB',
     icon: MessageSquareText,
   },
   decision: {
-    badge: 'bg-[#FEF3C7] text-[#B45309] border-[#FDE68A]',
+    badge: 'bg-amber-50 text-amber-700 border-amber-200',
     accent: '#D97706',
     icon: GitBranch,
   },
   tool: {
-    badge: 'bg-[#F5F3FF] text-[#6D28D9] border-[#DDD6FE]',
+    badge: 'bg-violet-50 text-violet-700 border-violet-200',
     accent: '#7C3AED',
     icon: Wrench,
   },
   handoff: {
-    badge: 'bg-[#F3F4F6] text-[#374151] border-[#E5E7EB]',
+    badge: 'bg-secondary text-secondary-foreground border-border',
     accent: '#4B5563',
     icon: Bot,
   },
@@ -86,7 +89,6 @@ function computeBezier(
     return { path, midX, midY };
   }
 
-  // Upward / loop-back edge: route cleanly around the side
   const side = x2 >= x1 ? 1 : -1;
   const spread = Math.max(130, Math.abs(x2 - x1) * 0.65);
   const cx1 = x1 + side * spread;
@@ -120,7 +122,6 @@ export function WorkflowCanvas({
   const [isPanning, setIsPanning] = useState(false);
   const [liveMessage, setLiveMessage] = useState('');
 
-  // Node drag state
   const dragNodeRef = useRef<{
     id: string;
     startClientX: number;
@@ -130,7 +131,6 @@ export function WorkflowCanvas({
   } | null>(null);
   const [draggingNodeId, setDraggingNodeId] = useState<string | null>(null);
 
-  // Canvas pan state
   const panStartRef = useRef<{
     startClientX: number;
     startClientY: number;
@@ -138,7 +138,6 @@ export function WorkflowCanvas({
     origPanY: number;
   } | null>(null);
 
-  // Connection drag state
   const [draftConn, setDraftConn] = useState<{
     sourceId: string;
     sourceHandle: 'next' | 'yes' | 'no';
@@ -149,7 +148,6 @@ export function WorkflowCanvas({
     hoveredTargetId: string | null;
   } | null>(null);
 
-  // Measure actual DOM heights of nodes so bottom ports align to the exact pixel
   useLayoutEffect(() => {
     const measured: Record<string, number> = {};
     let changed = false;
@@ -228,7 +226,6 @@ export function WorkflowCanvas({
     setPan({ x: Math.round(nextPanX), y: Math.round(nextPanY) });
   }, [nodes, nodeHeights]);
 
-  // Fit on initial non-empty load
   const didInitialFitRef = useRef(false);
   useEffect(() => {
     if (nodes.length > 0 && !didInitialFitRef.current) {
@@ -237,7 +234,6 @@ export function WorkflowCanvas({
     }
   }, [nodes.length, fitView]);
 
-  // Handle mouse/pointer connection dragging across document
   useEffect(() => {
     if (!draftConn) return;
 
@@ -248,7 +244,12 @@ export function WorkflowCanvas({
         const nx = n.x ?? 80;
         const ny = n.y ?? 60;
         const nh = nodeHeights[n.id] || DEFAULT_NODE_HEIGHT;
-        if (wx >= nx - PAD && wx <= nx + NODE_WIDTH + PAD && wy >= ny - PAD && wy <= ny + nh + PAD) {
+        if (
+          wx >= nx - PAD &&
+          wx <= nx + NODE_WIDTH + PAD &&
+          wy >= ny - PAD &&
+          wy <= ny + nh + PAD
+        ) {
           return n.id;
         }
       }
@@ -285,7 +286,15 @@ export function WorkflowCanvas({
       window.removeEventListener('pointerup', onUp);
       window.removeEventListener('pointercancel', onUp);
     };
-  }, [draftConn?.sourceId, draftConn?.sourceHandle, clientToWorld, getPortCoords, nodes, nodeHeights, onConnect]);
+  }, [
+    draftConn?.sourceId,
+    draftConn?.sourceHandle,
+    clientToWorld,
+    getPortCoords,
+    nodes,
+    nodeHeights,
+    onConnect,
+  ]);
 
   function startPan(e: React.PointerEvent<HTMLDivElement>) {
     if (e.button !== 0) return;
@@ -429,7 +438,7 @@ export function WorkflowCanvas({
         backgroundSize: `${gridSize}px ${gridSize}px`,
         backgroundPosition: `${pan.x}px ${pan.y}px`,
       }}
-      className={`wf-canvas relative flex-1 overflow-hidden bg-[#F8FAFC] ${
+      className={`wf-canvas relative flex-1 overflow-hidden bg-slate-50 ${
         isPanning ? 'cursor-grabbing' : 'cursor-grab'
       }`}
     >
@@ -522,38 +531,39 @@ export function WorkflowCanvas({
             );
           })}
 
-          {draftConn && (() => {
-            const { path } = computeBezier(
-              draftConn.startX,
-              draftConn.startY,
-              draftConn.currX,
-              draftConn.currY
-            );
-            return (
-              <path
-                d={path}
-                fill="none"
-                stroke="#2563EB"
-                strokeWidth={2.4}
-                strokeDasharray="6 5"
-                strokeLinecap="round"
-                markerEnd="url(#wf-arrow-draft)"
-              />
-            );
-          })()}
+          {draftConn &&
+            (() => {
+              const { path } = computeBezier(
+                draftConn.startX,
+                draftConn.startY,
+                draftConn.currX,
+                draftConn.currY
+              );
+              return (
+                <path
+                  d={path}
+                  fill="none"
+                  stroke="#2563EB"
+                  strokeWidth={2.4}
+                  strokeDasharray="6 5"
+                  strokeLinecap="round"
+                  markerEnd="url(#wf-arrow-draft)"
+                />
+              );
+            })()}
         </svg>
 
-        {/* Interactive Edge Pills (Label + Disconnect Button) */}
+        {/* Interactive Edge Pills */}
         {edges.map((edge) => {
           const p1 = getPortCoords(edge.sourceId, edge.sourceHandle);
           const p2 = getPortCoords(edge.targetId, 'in');
           const { midX, midY } = computeBezier(p1.x, p1.y, p2.x, p2.y);
           const pillTone =
             edge.sourceHandle === 'yes'
-              ? 'bg-[#ECFDF5] border-[#A7F3D0] text-[#047857]'
+              ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
               : edge.sourceHandle === 'no'
-                ? 'bg-[#FFF1F2] border-[#FECDD3] text-[#BE123C]'
-                : 'bg-white border-[#E2E8F0] text-[#475569]';
+                ? 'bg-rose-50 border-rose-200 text-rose-700'
+                : 'bg-card border-border text-muted-foreground';
 
           return (
             <div
@@ -577,9 +587,9 @@ export function WorkflowCanvas({
                   e.stopPropagation();
                   onDisconnect(edge.sourceId, edge.sourceHandle);
                 }}
-                className="w-3.5 h-3.5 rounded-full hover:bg-black/10 flex items-center justify-center cursor-pointer"
+                className="size-3.5 rounded-full hover:bg-black/10 flex items-center justify-center cursor-pointer"
               >
-                <X className="w-2.5 h-2.5" aria-hidden="true" />
+                <X className="size-2.5" aria-hidden="true" />
               </button>
             </div>
           );
@@ -612,23 +622,22 @@ export function WorkflowCanvas({
                 top: ny,
                 width: NODE_WIDTH,
               }}
-              className={`absolute pointer-events-auto bg-white rounded-xl border transition-shadow ${
+              className={`absolute pointer-events-auto bg-card rounded-xl border transition-shadow ${
                 isSnapTarget
-                  ? 'border-[#2563EB] ring-4 ring-[#2563EB]/20 shadow-lg'
+                  ? 'border-blue-600 ring-4 ring-blue-600/20 shadow-lg'
                   : isSelected
-                    ? 'border-[#18181B] ring-2 ring-[#18181B]/15 shadow-md'
-                    : 'border-[#E2E8F0] hover:border-[#94A3B8] shadow-xs'
+                    ? 'border-primary ring-2 ring-primary/15 shadow-md'
+                    : 'border-border hover:border-foreground/30 shadow-xs'
               } ${isDragging ? 'cursor-grabbing shadow-xl z-30' : 'cursor-grab z-10'}`}
             >
-              {/* Top Input Port */}
               {node.type !== 'start' && (
                 <div
                   data-port="true"
                   title="Input"
-                  className={`absolute -top-2 left-1/2 -translate-x-1/2 w-3.5 h-3.5 rounded-full border-2 transition ${
+                  className={`absolute -top-2 left-1/2 -translate-x-1/2 size-3.5 rounded-full border-2 transition ${
                     isSnapTarget
-                      ? 'bg-[#2563EB] border-white scale-125 shadow-sm'
-                      : 'bg-white border-[#94A3B8]'
+                      ? 'bg-blue-600 border-white scale-125 shadow-sm'
+                      : 'bg-card border-slate-400'
                   }`}
                 />
               )}
@@ -641,41 +650,41 @@ export function WorkflowCanvas({
                     data-drag-handle="true"
                     aria-label={`${node.title} drag handle. Use arrow keys to move.`}
                     onKeyDown={(e) => handleHandleKeyDown(e, node)}
-                    className="wf-drag-handle w-5 h-5 rounded text-[#9CA3AF] hover:text-[#374151] hover:bg-[#F3F4F6] flex items-center justify-center shrink-0"
+                    className="wf-drag-handle size-5 rounded text-muted-foreground hover:text-foreground hover:bg-accent flex items-center justify-center shrink-0"
                   >
-                    <GripVertical className="w-3.5 h-3.5" aria-hidden="true" />
+                    <GripVertical className="size-3.5" aria-hidden="true" />
                   </button>
-                  <span className="text-[10px] font-mono font-bold text-[#4B5563] bg-[#F3F4F6] px-1.5 py-0.5 rounded">
+                  <Badge variant="secondary" className="font-mono text-[10px] px-1.5 py-0 rounded">
                     {node.id}
-                  </span>
-                  <span
-                    className={`inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full border truncate ${theme.badge}`}
-                  >
-                    <Icon className="w-2.5 h-2.5 shrink-0" aria-hidden="true" />
+                  </Badge>
+                  <Badge className={`text-[10px] truncate ${theme.badge}`}>
+                    <Icon className="size-2.5 shrink-0" aria-hidden="true" />
                     <span className="truncate">{nodeTypeLabel(node.type)}</span>
-                  </span>
+                  </Badge>
                 </div>
 
-                <button
+                <Button
                   type="button"
+                  variant="ghost"
+                  size="icon-sm"
                   aria-label={`Delete ${node.title}`}
                   onClick={(e) => {
                     e.stopPropagation();
                     onDeleteNode(node.id);
                   }}
-                  className="w-6 h-6 rounded-md text-[#9CA3AF] hover:text-[#DC2626] hover:bg-[#FEF2F2] flex items-center justify-center shrink-0 cursor-pointer"
+                  className="size-6 text-muted-foreground hover:text-destructive hover:bg-destructive/10 shrink-0"
                 >
-                  <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
-                </button>
+                  <Trash2 className="size-3.5" aria-hidden="true" />
+                </Button>
               </div>
 
               {/* Node Body */}
               <div className="px-3.5 pb-3.5 space-y-1">
-                <div className="text-[13px] font-semibold text-[#111827] leading-snug">
+                <div className="text-[13px] font-semibold text-foreground leading-snug">
                   {node.title}
                 </div>
                 {node.explanation && (
-                  <p className="text-[11px] text-[#6B7280] leading-relaxed line-clamp-2">
+                  <p className="text-[11px] text-muted-foreground leading-relaxed line-clamp-2">
                     {node.explanation}
                   </p>
                 )}
@@ -684,32 +693,29 @@ export function WorkflowCanvas({
               {/* Bottom Output Ports */}
               {node.type === 'decision' ? (
                 <>
-                  {/* Decision footer labels */}
-                  <div className="px-3 pb-2.5 pt-1 border-t border-[#F1F5F9] grid grid-cols-2 gap-1.5 text-[10px] font-semibold">
-                    <div className="text-center text-[#047857] bg-[#ECFDF5] rounded-md py-0.5 px-1 truncate">
+                  <div className="px-3 pb-2.5 pt-1 border-t border-border/60 grid grid-cols-2 gap-1.5 text-[10px] font-semibold">
+                    <div className="text-center text-emerald-700 bg-emerald-50 rounded-md py-0.5 px-1 truncate">
                       {node.yesLabel || 'Yes'}
                     </div>
-                    <div className="text-center text-[#BE123C] bg-[#FFF1F2] rounded-md py-0.5 px-1 truncate">
+                    <div className="text-center text-rose-700 bg-rose-50 rounded-md py-0.5 px-1 truncate">
                       {node.noLabel || 'No'}
                     </div>
                   </div>
-                  {/* Branch A Port (left) */}
                   <button
                     type="button"
                     data-port="true"
                     aria-label={`Connect ${node.yesLabel || 'Branch A'} from ${node.id}`}
                     onPointerDown={(e) => startConnection(e, node.id, 'yes')}
                     style={{ left: '28%' }}
-                    className="absolute -bottom-2 -translate-x-1/2 w-4 h-4 rounded-full bg-[#10B981] border-2 border-white shadow-xs hover:scale-125 cursor-crosshair transition"
+                    className="absolute -bottom-2 -translate-x-1/2 size-4 rounded-full bg-emerald-500 border-2 border-white shadow-xs hover:scale-125 cursor-crosshair transition"
                   />
-                  {/* Branch B Port (right) */}
                   <button
                     type="button"
                     data-port="true"
                     aria-label={`Connect ${node.noLabel || 'Branch B'} from ${node.id}`}
                     onPointerDown={(e) => startConnection(e, node.id, 'no')}
                     style={{ left: '72%' }}
-                    className="absolute -bottom-2 -translate-x-1/2 w-4 h-4 rounded-full bg-[#F43F5E] border-2 border-white shadow-xs hover:scale-125 cursor-crosshair transition"
+                    className="absolute -bottom-2 -translate-x-1/2 size-4 rounded-full bg-rose-500 border-2 border-white shadow-xs hover:scale-125 cursor-crosshair transition"
                   />
                 </>
               ) : (
@@ -719,7 +725,7 @@ export function WorkflowCanvas({
                     data-port="true"
                     aria-label={`Connect output from ${node.id}`}
                     onPointerDown={(e) => startConnection(e, node.id, 'next')}
-                    className="absolute -bottom-2 left-1/2 -translate-x-1/2 w-4 h-4 rounded-full bg-[#18181B] border-2 border-white shadow-xs hover:scale-125 hover:bg-[#2563EB] cursor-crosshair transition"
+                    className="absolute -bottom-2 left-1/2 -translate-x-1/2 size-4 rounded-full bg-primary border-2 border-white shadow-xs hover:scale-125 hover:bg-blue-600 cursor-crosshair transition"
                   />
                 )
               )}
@@ -731,7 +737,7 @@ export function WorkflowCanvas({
       {/* Bottom-left helper hint */}
       <div
         data-wf-control="true"
-        className="hidden sm:flex absolute bottom-3 left-3 z-20 px-3 py-1.5 rounded-lg bg-white/90 backdrop-blur-xs border border-[#E2E8F0] text-[11px] text-[#64748B] shadow-2xs pointer-events-none"
+        className="hidden sm:flex absolute bottom-3 left-3 z-20 px-3 py-1.5 rounded-lg bg-card/90 backdrop-blur-xs border border-border text-[11px] text-muted-foreground shadow-2xs pointer-events-none"
       >
         {t.workflowCanvasHint}
       </div>
@@ -739,48 +745,52 @@ export function WorkflowCanvas({
       {/* Bottom-right Zoom & Auto-Layout Controls */}
       <div
         data-wf-control="true"
-        className="absolute bottom-3 right-3 z-20 inline-flex items-center gap-1 p-1 rounded-xl bg-white border border-[#E2E8F0] shadow-sm"
+        className="absolute bottom-3 right-3 z-20 inline-flex items-center gap-1 p-1 rounded-xl bg-card border border-border shadow-sm"
       >
-        <button
+        <Button
           type="button"
+          variant="ghost"
+          size="icon-sm"
           onClick={() => setZoom((z) => Number(Math.max(0.45, z - 0.1).toFixed(2)))}
           aria-label="Zoom out"
-          className="w-7 h-7 rounded-lg text-[#475569] hover:bg-[#F1F5F9] flex items-center justify-center cursor-pointer"
         >
-          <Minus className="w-3.5 h-3.5" aria-hidden="true" />
-        </button>
-        <span className="px-1.5 text-[11px] font-medium text-[#334155] tabular-nums min-w-[40px] text-center">
+          <Minus className="size-3.5" aria-hidden="true" />
+        </Button>
+        <span className="px-1.5 text-[11px] font-medium text-foreground tabular-nums min-w-[40px] text-center">
           {Math.round(zoom * 100)}%
         </span>
-        <button
+        <Button
           type="button"
+          variant="ghost"
+          size="icon-sm"
           onClick={() => setZoom((z) => Number(Math.min(1.45, z + 0.1).toFixed(2)))}
           aria-label="Zoom in"
-          className="w-7 h-7 rounded-lg text-[#475569] hover:bg-[#F1F5F9] flex items-center justify-center cursor-pointer"
         >
-          <Plus className="w-3.5 h-3.5" aria-hidden="true" />
-        </button>
-        <div className="w-px h-4 bg-[#E2E8F0] mx-0.5" aria-hidden="true" />
-        <button
+          <Plus className="size-3.5" aria-hidden="true" />
+        </Button>
+        <Separator orientation="vertical" className="h-4 mx-0.5" />
+        <Button
           type="button"
+          variant="ghost"
+          size="icon-sm"
           onClick={fitView}
           title={t.workflowFitView}
           aria-label={t.workflowFitView}
-          className="w-7 h-7 rounded-lg text-[#475569] hover:bg-[#F1F5F9] flex items-center justify-center cursor-pointer"
         >
-          <Maximize2 className="w-3.5 h-3.5" aria-hidden="true" />
-        </button>
-        <button
+          <Maximize2 className="size-3.5" aria-hidden="true" />
+        </Button>
+        <Button
           type="button"
+          variant="ghost"
+          size="xs"
           onClick={() => {
             onAutoLayout();
             requestAnimationFrame(() => fitView());
           }}
-          className="px-2.5 h-7 rounded-lg text-[11px] font-medium text-[#111827] hover:bg-[#F1F5F9] inline-flex items-center gap-1.5 cursor-pointer"
         >
-          <LayoutGrid className="w-3.5 h-3.5" aria-hidden="true" />
+          <LayoutGrid className="size-3.5" aria-hidden="true" />
           <span>{t.workflowAutoLayout}</span>
-        </button>
+        </Button>
       </div>
     </div>
   );

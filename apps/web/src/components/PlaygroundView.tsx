@@ -1,15 +1,189 @@
-import { useState } from 'react';
-import { Activity, Send, Sparkles } from 'lucide-react';
-import { apiRequest } from '../lib/api';
+import { useEffect, useRef, useState } from 'react';
+import {
+  Activity,
+  Bot,
+  FileText,
+  Globe,
+  RotateCcw,
+  Send,
+  Sparkles,
+  Wrench,
+} from 'lucide-react';
+import type { SupportedLanguage } from '@askmink/shared';
+import { apiRequest } from '@/lib/api';
+import { cn } from '@/lib/utils';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { Separator } from '@/components/ui/separator';
 
-export function PlaygroundView({ agent }: { agent: any }) {
+interface PlaygroundViewProps {
+  agent: any;
+  lang?: SupportedLanguage;
+  t?: Record<string, string>;
+}
+
+const COPY: Record<
+  SupportedLanguage,
+  {
+    title: string;
+    subtitle: string;
+    urlLabel: string;
+    urlPlaceholder: string;
+    langLabel: string;
+    reset: string;
+    emptyTitle: string;
+    emptyDesc: string;
+    inputPlaceholder: string;
+    send: string;
+    thinking: string;
+    traceTitle: string;
+    traceEmptyTitle: string;
+    traceEmptyDesc: string;
+    metricMode: string;
+    metricLatency: string;
+    metricModel: string;
+    metricTokens: string;
+    ragChunks: string;
+    noRagChunks: string;
+    toolCalls: string;
+    noToolCalls: string;
+    confirmExecute: string;
+    starters: string[];
+  }
+> = {
+  en: {
+    title: 'Playground',
+    subtitle: 'Test responses, RAG retrieval, and tools in real time.',
+    urlLabel: 'Simulated URL',
+    urlPlaceholder: '/pricing, /docs/api',
+    langLabel: 'Language',
+    reset: 'Reset chat',
+    emptyTitle: 'Start a test conversation',
+    emptyDesc:
+      'Send a message or pick a starter prompt to inspect hybrid RAG chunks, Dual-Mode routing, HTTP/MCP tools, and Generative UI cards.',
+    inputPlaceholder: 'Ask about docs, pricing, schedule a meeting, or trigger a tool...',
+    send: 'Send',
+    thinking: 'Thinking...',
+    traceTitle: 'Trace Inspector (X-Ray)',
+    traceEmptyTitle: 'No execution trace yet',
+    traceEmptyDesc:
+      'Send a message in the playground to inspect routing mode, latency, retrieved RAG chunks, and tool calls.',
+    metricMode: 'MODE',
+    metricLatency: 'LATENCY',
+    metricModel: 'MODEL',
+    metricTokens: 'EST. TOKENS',
+    ragChunks: 'RAG Chunks',
+    noRagChunks: 'No knowledge chunks retrieved for this turn.',
+    toolCalls: 'Tool Calls',
+    noToolCalls: 'No tools were invoked in this turn.',
+    confirmExecute: 'Confirm & Execute',
+    starters: [
+      'What plans and pricing do you offer?',
+      'Can I schedule a quick demo?',
+      'How do I integrate this with my website?',
+      'I need help with a support issue.',
+    ],
+  },
+  pt: {
+    title: 'Playground',
+    subtitle: 'Teste respostas, busca RAG e ferramentas em tempo real.',
+    urlLabel: 'URL simulada',
+    urlPlaceholder: '/pricing, /docs/api',
+    langLabel: 'Idioma',
+    reset: 'Limpar chat',
+    emptyTitle: 'Inicie uma conversa de teste',
+    emptyDesc:
+      'Envie uma mensagem ou escolha uma sugestão para inspecionar trechos RAG, roteamento Dual-Mode, ferramentas HTTP/MCP e cards generativos.',
+    inputPlaceholder: 'Pergunte sobre docs, preços, agende uma reunião ou acione uma ferramenta...',
+    send: 'Enviar',
+    thinking: 'Pensando...',
+    traceTitle: 'Inspetor de Trace (X-Ray)',
+    traceEmptyTitle: 'Nenhum trace de execução ainda',
+    traceEmptyDesc:
+      'Envie uma mensagem no playground para inspecionar o modo ativo, latência, trechos RAG recuperados e chamadas de ferramentas.',
+    metricMode: 'MODO',
+    metricLatency: 'LATÊNCIA',
+    metricModel: 'MODELO',
+    metricTokens: 'TOKENS EST.',
+    ragChunks: 'Trechos RAG',
+    noRagChunks: 'Nenhum trecho da base de conhecimento recuperado neste turno.',
+    toolCalls: 'Chamadas de Ferramentas',
+    noToolCalls: 'Nenhuma ferramenta foi acionada neste turno.',
+    confirmExecute: 'Confirmar e Executar',
+    starters: [
+      'Quais planos e preços vocês oferecem?',
+      'Posso agendar uma demonstração rápida?',
+      'Como faço para integrar no meu site?',
+      'Preciso de ajuda com um problema de suporte.',
+    ],
+  },
+  es: {
+    title: 'Playground',
+    subtitle: 'Prueba respuestas, recuperación RAG y herramientas en tiempo real.',
+    urlLabel: 'URL simulada',
+    urlPlaceholder: '/pricing, /docs/api',
+    langLabel: 'Idioma',
+    reset: 'Reiniciar chat',
+    emptyTitle: 'Inicia una conversación de prueba',
+    emptyDesc:
+      'Envía un mensaje o elige una sugerencia para inspeccionar fragmentos RAG, enrutamiento Dual-Mode, herramientas HTTP/MCP y tarjetas generativas.',
+    inputPlaceholder: 'Pregunta sobre docs, precios, agenda una reunión o ejecuta una herramienta...',
+    send: 'Enviar',
+    thinking: 'Pensando...',
+    traceTitle: 'Inspector de Traza (X-Ray)',
+    traceEmptyTitle: 'Aún no hay traza de ejecución',
+    traceEmptyDesc:
+      'Envía un mensaje en el playground para inspeccionar el modo, latencia, fragmentos RAG recuperados y llamadas a herramientas.',
+    metricMode: 'MODO',
+    metricLatency: 'LATENCIA',
+    metricModel: 'MODELO',
+    metricTokens: 'TOKENS EST.',
+    ragChunks: 'Fragmentos RAG',
+    noRagChunks: 'No se recuperaron fragmentos de conocimiento en este turno.',
+    toolCalls: 'Llamadas de Herramientas',
+    noToolCalls: 'No se invocaron herramientas en este turno.',
+    confirmExecute: 'Confirmar y Ejecutar',
+    starters: [
+      '¿Qué planes y precios ofrecen?',
+      '¿Puedo agendar una demostración rápida?',
+      '¿Cómo lo integro en mi sitio web?',
+      'Necesito ayuda con un problema de soporte.',
+    ],
+  },
+};
+
+export function PlaygroundView({ agent, lang = 'en', t }: PlaygroundViewProps) {
+  const ui = COPY[lang] || COPY.en;
   const [pageUrl, setPageUrl] = useState('/pricing');
-  const [language, setLanguage] = useState<'en' | 'pt' | 'es'>(agent.defaultLanguage || 'en');
+  const [language, setLanguage] = useState<'en' | 'pt' | 'es'>(agent.defaultLanguage || lang || 'en');
   const [input, setInput] = useState('');
   const [conversationId, setConversationId] = useState<string | undefined>();
   const [messages, setMessages] = useState<any[]>([]);
   const [lastTrace, setLastTrace] = useState<any>(null);
   const [loading, setLoading] = useState(false);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setLanguage(agent.defaultLanguage || lang || 'en');
+    setMessages([]);
+    setConversationId(undefined);
+    setLastTrace(null);
+    setInput('');
+  }, [agent.id]);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages, loading]);
 
   async function send(text: string, confirmedToolCallId?: string) {
     const trimmed = text.trim();
@@ -28,179 +202,379 @@ export function PlaygroundView({ agent }: { agent: any }) {
       setLastTrace(res.trace);
       setMessages((prev) => [
         ...prev,
-        { role: 'assistant', text: res.text, citations: res.citations, cards: res.cards, mode: res.mode },
+        {
+          role: 'assistant',
+          text: res.text,
+          citations: res.citations,
+          cards: res.cards,
+          mode: res.mode,
+        },
       ]);
     } catch (err) {
-      setMessages((prev) => [...prev, { role: 'assistant', text: `Error: ${(err as Error).message}` }]);
+      setMessages((prev) => [
+        ...prev,
+        { role: 'assistant', text: `Error: ${(err as Error).message}` },
+      ]);
     } finally {
       setLoading(false);
     }
   }
 
+  function handleReset() {
+    setMessages([]);
+    setConversationId(undefined);
+    setLastTrace(null);
+  }
+
+  const starterPrompts = (COPY[language] || ui).starters;
+  const ragChunks = lastTrace?.ragChunks ?? [];
+  const toolCalls = lastTrace?.toolCalls ?? [];
+
   return (
-    <div className="flex-1 flex min-h-0 overflow-hidden">
+    <div className="flex-1 flex flex-col lg:flex-row min-h-0 overflow-hidden">
       {/* Left: Interactive Chat + Generative UI */}
-      <div className="flex-1 flex flex-col min-w-0 bg-[#F8F9FB]">
-        <div className="px-5 py-3 bg-white border-b border-[#EAECEF] flex flex-wrap items-center gap-3">
-          <span className="text-xs font-semibold text-[#111827] flex items-center gap-1.5">
-            <Sparkles className="w-4 h-4 text-[#2563EB]" /> Playground
-          </span>
-          <input
-            className="text-xs px-2.5 py-1.5 rounded-lg border border-[#E5E7EB] bg-[#F9FAFB] w-48"
-            value={pageUrl}
-            onChange={(e) => setPageUrl(e.target.value)}
-            placeholder="Simulated URL (/pricing, /docs/api)"
-          />
-          <select
-            className="text-xs px-2 py-1.5 rounded-lg border border-[#E5E7EB] bg-white"
-            value={language}
-            onChange={(e) => setLanguage(e.target.value as any)}
-          >
-            <option value="en">EN</option>
-            <option value="pt">PT</option>
-            <option value="es">ES</option>
-          </select>
-          <button
-            type="button"
-            onClick={() => {
-              setMessages([]);
-              setConversationId(undefined);
-              setLastTrace(null);
-            }}
-            className="ml-auto text-xs px-2.5 py-1.5 rounded-lg border border-[#EAECEF] hover:bg-[#F3F4F6]"
-          >
-            Reset chat
-          </button>
+      <div className="flex-1 flex flex-col min-w-0 min-h-0 bg-background">
+        {/* Studio Toolbar */}
+        <div className="px-5 lg:px-6 py-4 bg-card border-b border-border flex flex-wrap items-center justify-between gap-3 shrink-0">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <h1 className="text-xl font-semibold text-foreground tracking-tight">
+                {ui.title}
+              </h1>
+              <Badge variant="secondary" className="font-normal truncate max-w-[160px]">
+                {agent.name}
+              </Badge>
+            </div>
+            <p className="text-xs text-muted-foreground mt-0.5 hidden sm:block">{ui.subtitle}</p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2.5">
+            <div className="flex items-center gap-1.5">
+              <Label
+                htmlFor="playground-page-url"
+                className="text-[11px] text-muted-foreground shrink-0 hidden md:inline-flex items-center gap-1"
+              >
+                <Globe className="size-3" aria-hidden="true" />
+                <span>{ui.urlLabel}</span>
+              </Label>
+              <Input
+                id="playground-page-url"
+                aria-label={ui.urlLabel}
+                className="w-40 sm:w-48 bg-muted/40 font-mono"
+                value={pageUrl}
+                onChange={(e) => setPageUrl(e.target.value)}
+                placeholder={ui.urlPlaceholder}
+              />
+            </div>
+
+            <div className="flex items-center gap-1.5">
+              <Label
+                htmlFor="playground-language"
+                className="text-[11px] text-muted-foreground shrink-0 sr-only"
+              >
+                {ui.langLabel}
+              </Label>
+              <Select value={language} onValueChange={(v) => setLanguage(v as 'en' | 'pt' | 'es')}>
+                <SelectTrigger id="playground-language" className="w-20" aria-label={ui.langLabel}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="en">EN</SelectItem>
+                  <SelectItem value="pt">PT</SelectItem>
+                  <SelectItem value="es">ES</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <Button type="button" variant="outline" onClick={handleReset}>
+              <RotateCcw className="size-3.5" aria-hidden="true" />
+              <span>{t?.resetPreviewChat || ui.reset}</span>
+            </Button>
+          </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-5 space-y-3">
-          {messages.length === 0 && (
-            <div className="text-center py-12 text-xs text-[#9CA3AF]">
-              Send a message to inspect hybrid RAG chunks, Dual-Mode routing, HTTP/MCP tools, and Generative UI cards.
-            </div>
-          )}
-          {messages.map((m, i) => (
-            <div
-              key={i}
-              className={`max-w-[80%] rounded-xl px-4 py-3 text-sm ${
-                m.role === 'user'
-                  ? 'ml-auto bg-[#18181B] text-white'
-                  : 'bg-white border border-[#EAECEF] text-[#111827]'
-              }`}
-            >
-              <div className="whitespace-pre-wrap">{m.text}</div>
-              {m.citations?.length > 0 && (
-                <div className="mt-2 flex flex-wrap gap-1.5">
-                  {m.citations.map((c: any, idx: number) => (
-                    <span
-                      key={idx}
-                      className="text-[11px] px-2 py-0.5 rounded-full bg-[#EFF6FF] text-[#1D4ED8] border border-[#DBEAFE]"
+        {/* Message Stream */}
+        <div className="flex-1 overflow-y-auto sidebar-scroll p-5 lg:p-6">
+          <div className="max-w-3xl mx-auto space-y-4">
+            {messages.length === 0 && (
+              <Card className="border-dashed rounded-2xl p-8 text-center space-y-4 my-6">
+                <div className="size-10 rounded-xl bg-secondary text-secondary-foreground mx-auto flex items-center justify-center">
+                  <Sparkles className="size-5 text-blue-600" aria-hidden="true" />
+                </div>
+                <div className="space-y-1">
+                  <h2 className="text-sm font-semibold text-foreground">{ui.emptyTitle}</h2>
+                  <p className="text-xs text-muted-foreground max-w-md mx-auto leading-relaxed">
+                    {ui.emptyDesc}
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
+                  {starterPrompts.map((prompt) => (
+                    <Button
+                      key={prompt}
+                      type="button"
+                      variant="outline"
+                      size="xs"
+                      onClick={() => send(prompt)}
+                      className="rounded-full h-auto py-1.5 px-3 text-xs font-normal text-muted-foreground hover:text-foreground whitespace-normal text-left"
                     >
-                      {c.title} ({c.score})
-                    </span>
+                      {prompt}
+                    </Button>
                   ))}
                 </div>
-              )}
-              {m.cards?.map((card: any, idx: number) => (
-                <div key={idx} className="mt-2 p-3 rounded-xl border border-[#EAECEF] bg-[#F8F9FB] text-xs space-y-1">
-                  <div className="font-semibold text-[#111827]">{card.type}</div>
-                  <pre className="text-[11px] font-mono text-[#4B5563] overflow-x-auto">
-                    {JSON.stringify(card, null, 2)}
-                  </pre>
-                  {card.type === 'confirmation_request' && (
-                    <button
-                      type="button"
-                      onClick={() => send(`Confirm ${card.toolName}`, card.toolCallId)}
-                      className="mt-1 px-3 py-1.5 rounded-lg bg-[#18181B] text-white text-xs"
-                    >
-                      Confirm &amp; Execute
-                    </button>
+              </Card>
+            )}
+
+            {messages.map((m, i) => (
+              <div
+                key={i}
+                className={cn(
+                  'flex items-start gap-2.5',
+                  m.role === 'user' ? 'justify-end' : 'justify-start'
+                )}
+              >
+                {m.role !== 'user' && (
+                  <span
+                    className="size-7 rounded-lg text-white flex items-center justify-center shrink-0 mt-0.5 shadow-2xs"
+                    style={{ backgroundColor: agent.primaryColor || '#2563EB' }}
+                    aria-hidden="true"
+                  >
+                    <Bot className="size-3.5" />
+                  </span>
+                )}
+
+                <div
+                  className={cn(
+                    'max-w-[82%] rounded-2xl px-4 py-3 text-sm leading-relaxed',
+                    m.role === 'user'
+                      ? 'bg-primary text-primary-foreground rounded-tr-sm'
+                      : 'bg-card border border-border text-foreground shadow-2xs rounded-tl-sm'
                   )}
+                >
+                  {m.role !== 'user' && m.mode && (
+                    <div className="mb-1.5 flex items-center gap-1.5">
+                      <Badge variant="outline" className="text-[10px] uppercase tracking-wider">
+                        {m.mode === 'sales'
+                          ? t?.modeSales || 'Sales'
+                          : m.mode === 'support'
+                            ? t?.modeSupport || 'Support'
+                            : m.mode}
+                      </Badge>
+                    </div>
+                  )}
+
+                  <div className="whitespace-pre-wrap break-words">{m.text}</div>
+
+                  {m.citations?.length > 0 && (
+                    <div className="mt-2.5 flex flex-wrap gap-1.5">
+                      {m.citations.map((c: any, idx: number) => (
+                        <Badge key={idx} variant="info">
+                          <FileText className="size-3" aria-hidden="true" />
+                          <span>
+                            {c.title} ({c.score})
+                          </span>
+                        </Badge>
+                      ))}
+                    </div>
+                  )}
+
+                  {m.cards?.map((card: any, idx: number) => (
+                    <Card key={idx} className="mt-2.5 p-3 bg-muted/40 text-xs space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <Badge variant="secondary" className="font-mono text-[10px]">
+                          {card.type}
+                        </Badge>
+                      </div>
+                      <pre className="text-[11px] font-mono text-muted-foreground overflow-x-auto leading-relaxed">
+                        {JSON.stringify(card, null, 2)}
+                      </pre>
+                      {card.type === 'confirmation_request' && (
+                        <Button
+                          type="button"
+                          size="xs"
+                          onClick={() => send(`Confirm ${card.toolName}`, card.toolCallId)}
+                        >
+                          {ui.confirmExecute}
+                        </Button>
+                      )}
+                    </Card>
+                  ))}
                 </div>
-              ))}
-            </div>
-          ))}
+              </div>
+            ))}
+
+            {loading && (
+              <div className="flex items-start gap-2.5">
+                <span
+                  className="size-7 rounded-lg text-white flex items-center justify-center shrink-0 mt-0.5 shadow-2xs"
+                  style={{ backgroundColor: agent.primaryColor || '#2563EB' }}
+                  aria-hidden="true"
+                >
+                  <Bot className="size-3.5" />
+                </span>
+                <div className="rounded-2xl rounded-tl-sm px-4 py-3 bg-card border border-border text-xs text-muted-foreground inline-flex items-center gap-2 shadow-2xs">
+                  <span
+                    className="size-2 rounded-full bg-blue-600 animate-pulse"
+                    aria-hidden="true"
+                  />
+                  <span>{t?.widgetThinking || ui.thinking}</span>
+                </div>
+              </div>
+            )}
+
+            <div ref={messagesEndRef} />
+          </div>
         </div>
 
+        {/* Chat Composer */}
         <form
           onSubmit={(e) => {
             e.preventDefault();
             send(input);
           }}
-          className="p-4 bg-white border-t border-[#EAECEF] flex gap-2"
+          className="px-5 py-3.5 bg-card border-t border-border shrink-0"
         >
-          <input
-            className="flex-1 px-3 py-2 text-sm border border-[#E5E7EB] rounded-lg focus:outline-none focus:border-[#2563EB]"
-            placeholder="Ask about docs, pricing, schedule a meeting, or trigger a tool..."
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            disabled={loading}
-          />
-          <button
-            type="submit"
-            disabled={loading}
-            className="px-4 py-2 rounded-lg bg-[#18181B] text-white text-sm font-medium inline-flex items-center gap-1.5"
-          >
-            <Send className="w-3.5 h-3.5" /> Send
-          </button>
+          <div className="max-w-3xl mx-auto flex items-center gap-2">
+            <Input
+              aria-label={ui.inputPlaceholder}
+              className="flex-1 h-9 text-sm"
+              placeholder={ui.inputPlaceholder}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              disabled={loading}
+            />
+            <Button type="submit" size="lg" disabled={loading || !input.trim()}>
+              <Send className="size-3.5" aria-hidden="true" />
+              <span>{t?.widgetSend || ui.send}</span>
+            </Button>
+          </div>
         </form>
       </div>
 
-      {/* Right: Trace Inspector (Raio-X) */}
-      <aside className="w-[360px] border-l border-[#EAECEF] bg-white overflow-y-auto p-4 space-y-4">
-        <div className="flex items-center gap-2 text-xs font-semibold text-[#111827]">
-          <Activity className="w-4 h-4 text-[#2563EB]" /> Trace Inspector (X-Ray)
+      {/* Right: Trace Inspector (X-Ray) */}
+      <aside className="w-full lg:w-[360px] xl:w-[380px] border-t lg:border-t-0 lg:border-l border-border bg-card flex flex-col shrink-0 max-h-[40vh] lg:max-h-none">
+        <div className="px-4 py-3.5 border-b border-border flex items-center justify-between gap-2 shrink-0">
+          <div className="flex items-center gap-2 text-xs font-semibold text-foreground">
+            <Activity className="size-4 text-blue-600 shrink-0" aria-hidden="true" />
+            <span>{ui.traceTitle}</span>
+          </div>
+          {lastTrace && (
+            <Badge variant="success" className="tabular-nums">
+              {lastTrace.latencyMs} ms
+            </Badge>
+          )}
         </div>
-        {!lastTrace ? (
-          <p className="text-xs text-[#9CA3AF]">No execution trace yet.</p>
-        ) : (
-          <>
-            <div className="grid grid-cols-2 gap-2 text-xs">
-              <div className="p-2.5 rounded-lg bg-[#F8F9FB] border border-[#EAECEF]">
-                <div className="text-[10px] text-[#9CA3AF]">MODE</div>
-                <div className="font-semibold uppercase text-[#111827]">{lastTrace.mode}</div>
-              </div>
-              <div className="p-2.5 rounded-lg bg-[#F8F9FB] border border-[#EAECEF]">
-                <div className="text-[10px] text-[#9CA3AF]">LATENCY</div>
-                <div className="font-semibold tabular-nums text-[#111827]">{lastTrace.latencyMs} ms</div>
-              </div>
-              <div className="p-2.5 rounded-lg bg-[#F8F9FB] border border-[#EAECEF]">
-                <div className="text-[10px] text-[#9CA3AF]">MODEL</div>
-                <div className="font-mono text-[11px] truncate">{lastTrace.model}</div>
-              </div>
-              <div className="p-2.5 rounded-lg bg-[#F8F9FB] border border-[#EAECEF]">
-                <div className="text-[10px] text-[#9CA3AF]">EST. TOKENS</div>
-                <div className="font-semibold tabular-nums">{lastTrace.estimatedTokens}</div>
-              </div>
-            </div>
 
-            <div>
-              <h4 className="text-xs font-semibold text-[#111827] mb-1.5">
-                RAG Chunks ({lastTrace.ragChunks?.length ?? 0})
-              </h4>
-              <div className="space-y-2">
-                {(lastTrace.ragChunks ?? []).map((c: any, idx: number) => (
-                  <div key={idx} className="p-2.5 rounded-lg border border-[#EAECEF] bg-[#F8F9FB] text-xs">
-                    <div className="flex justify-between font-medium text-[#111827]">
-                      <span className="truncate">{c.title}</span>
-                      <span className="font-mono text-[11px] text-[#2563EB]">RRF {c.rrfScore}</span>
-                    </div>
-                    <p className="text-[11px] text-[#6B7280] mt-1 line-clamp-3">{c.snippet}</p>
+        <div className="flex-1 overflow-y-auto sidebar-scroll p-4 space-y-4">
+          {!lastTrace ? (
+            <Card className="border-dashed p-6 text-center space-y-2.5 bg-muted/20">
+              <div className="size-9 rounded-xl bg-secondary text-secondary-foreground mx-auto flex items-center justify-center">
+                <Activity className="size-4 text-muted-foreground" aria-hidden="true" />
+              </div>
+              <div className="text-xs font-semibold text-foreground">{ui.traceEmptyTitle}</div>
+              <p className="text-[11px] text-muted-foreground leading-relaxed">
+                {ui.traceEmptyDesc}
+              </p>
+            </Card>
+          ) : (
+            <>
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <div className="p-2.5 rounded-lg bg-muted/60 border border-border">
+                  <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                    {ui.metricMode}
                   </div>
-                ))}
+                  <div className="mt-1">
+                    <Badge variant="info" className="uppercase">
+                      {lastTrace.mode}
+                    </Badge>
+                  </div>
+                </div>
+                <div className="p-2.5 rounded-lg bg-muted/60 border border-border">
+                  <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                    {ui.metricLatency}
+                  </div>
+                  <div className="font-semibold tabular-nums text-foreground mt-0.5">
+                    {lastTrace.latencyMs} ms
+                  </div>
+                </div>
+                <div className="p-2.5 rounded-lg bg-muted/60 border border-border">
+                  <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                    {ui.metricModel}
+                  </div>
+                  <div
+                    className="font-mono text-[11px] text-foreground truncate mt-0.5"
+                    title={lastTrace.model}
+                  >
+                    {lastTrace.model}
+                  </div>
+                </div>
+                <div className="p-2.5 rounded-lg bg-muted/60 border border-border">
+                  <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                    {ui.metricTokens}
+                  </div>
+                  <div className="font-semibold tabular-nums text-foreground mt-0.5">
+                    {lastTrace.estimatedTokens}
+                  </div>
+                </div>
               </div>
-            </div>
 
-            <div>
-              <h4 className="text-xs font-semibold text-[#111827] mb-1.5">
-                Tool Calls ({lastTrace.toolCalls?.length ?? 0})
-              </h4>
-              <pre className="p-2.5 rounded-lg bg-[#111827] text-[#E5E7EB] font-mono text-[11px] overflow-x-auto">
-                {JSON.stringify(lastTrace.toolCalls ?? [], null, 2)}
-              </pre>
-            </div>
-          </>
-        )}
+              <Separator />
+
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <h2 className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+                    <FileText className="size-3.5 text-muted-foreground" aria-hidden="true" />
+                    <span>{ui.ragChunks}</span>
+                  </h2>
+                  <Badge variant="secondary" className="tabular-nums">
+                    {ragChunks.length}
+                  </Badge>
+                </div>
+
+                {ragChunks.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">{ui.noRagChunks}</p>
+                ) : (
+                  <div className="space-y-2">
+                    {ragChunks.map((c: any, idx: number) => (
+                      <Card key={idx} className="p-3 bg-muted/40 text-xs space-y-1.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-medium text-foreground truncate">{c.title}</span>
+                          <Badge variant="info" className="font-mono text-[10px] shrink-0">
+                            RRF {c.rrfScore}
+                          </Badge>
+                        </div>
+                        <p className="text-[11px] text-muted-foreground leading-relaxed line-clamp-3">
+                          {c.snippet}
+                        </p>
+                      </Card>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <Separator />
+
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <h2 className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+                    <Wrench className="size-3.5 text-muted-foreground" aria-hidden="true" />
+                    <span>{ui.toolCalls}</span>
+                  </h2>
+                  <Badge variant="secondary" className="tabular-nums">
+                    {toolCalls.length}
+                  </Badge>
+                </div>
+
+                {toolCalls.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">{ui.noToolCalls}</p>
+                ) : (
+                  <pre className="p-3 rounded-xl bg-zinc-900 text-zinc-100 font-mono text-[11px] overflow-x-auto leading-relaxed">
+                    {JSON.stringify(toolCalls, null, 2)}
+                  </pre>
+                )}
+              </div>
+            </>
+          )}
+        </div>
       </aside>
     </div>
   );

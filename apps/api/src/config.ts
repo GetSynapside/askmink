@@ -56,6 +56,7 @@ export interface AppConfig {
     audience: string;
   };
   allowMockProvider: boolean;
+  pgbossSchema?: string;
 }
 
 export function loadConfig(): AppConfig {

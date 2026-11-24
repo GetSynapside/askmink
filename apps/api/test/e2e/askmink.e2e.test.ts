@@ -156,6 +156,7 @@ describe('Askmink MVP E2E Suite (Real PostgreSQL 18 + pgvector + pg-boss + Hono)
       port: 0,
       aiGatewayApiKey: undefined, // Deterministic mock for core E2E; live gateway tested separately below
       allowMockProvider: true,
+      pgbossSchema: 'pgboss_test',
     };
     ctx = await createAskminkApp(config);
     apiServer = serve({ fetch: ctx.app.fetch, hostname: '127.0.0.1', port: 0 });
@@ -255,14 +256,13 @@ describe('Askmink MVP E2E Suite (Real PostgreSQL 18 + pgvector + pg-boss + Hono)
     const widgetJwtSecret: string = agentRes.data.widgetJwtSecretOnce;
     expect(widgetJwtSecret.length).toBeGreaterThan(20);
 
-    // Tenant isolation: Bob cannot read Alice's agent or bind Alice's provider key
+    // Tenant isolation: Bob cannot read Alice's agent or bind Alice's provider key globally
     const bobRead = await bob.fetchJson(`/api/agents/${agentId}`);
     expect(bobRead.status).toBe(404);
 
-    const bobCrossKey = await bob.fetchJson('/api/agents', {
-      method: 'POST',
+    const bobCrossKey = await bob.fetchJson('/api/account/ai-settings', {
+      method: 'PATCH',
       body: {
-        name: 'Bob Unauthorized Key Agent',
         chatProviderKeyId: keyRes.data.item.id,
       },
     });
@@ -312,19 +312,20 @@ describe('Askmink MVP E2E Suite (Real PostgreSQL 18 + pgvector + pg-boss + Hono)
     expect(ragChat.data.text).toContain('SKU-MINK-9001');
     expect(ragChat.data.trace.ragChunks.length).toBeGreaterThan(0);
 
-    // 6. Embedding model change blocked without confirmReindex, then cleanly re-indexed natively to 768d!
-    const blockedSwitch = await alice.fetchJson(`/api/agents/${agentId}`, {
+    // 6. Global embedding model change blocked without confirmReindex, then cleanly re-indexed natively to 768d!
+    const blockedSwitch = await alice.fetchJson('/api/account/ai-settings', {
       method: 'PATCH',
       body: { embeddingModel: 'text-embedding-004' },
     });
     expect(blockedSwitch.status).toBe(409);
     expect(blockedSwitch.data.error).toBe('EMBEDDING_REINDEX_REQUIRED');
 
-    const confirmedSwitch = await alice.fetchJson(`/api/agents/${agentId}`, {
+    const confirmedSwitch = await alice.fetchJson('/api/account/ai-settings', {
       method: 'PATCH',
       body: { embeddingModel: 'text-embedding-004', confirmReindex: true },
     });
     expect(confirmedSwitch.status).toBe(200);
+    expect(confirmedSwitch.data.settings.embeddingModel).toBe('text-embedding-004');
 
     const sources768 = await waitFor(
       () => alice.fetchJson(`/api/agents/${agentId}/knowledge`),
@@ -558,6 +559,213 @@ describe('Askmink MVP E2E Suite (Real PostgreSQL 18 + pgvector + pg-boss + Hono)
     expect(logoutRes.status).toBe(200);
     const meAfterLogout = await alice.fetchJson('/api/auth/me');
     expect(meAfterLogout.status).toBe(401);
+  });
+
+  it('Global Account BYOK: Separate Chat & Embedding providers shared across multiple agents + validation', async () => {
+    const unique = Date.now();
+    const carol = createTestClient(baseUrl);
+    const dave = createTestClient(baseUrl);
+
+    await carol.fetchJson('/api/auth/signup', {
+      method: 'POST',
+      body: {
+        name: 'Carol Multi-Agent',
+        email: `carol+${unique}@example.com`,
+        password: 'StrongPassword!2026',
+        workspaceName: 'Carol Global AI',
+      },
+    });
+    await dave.fetchJson('/api/auth/signup', {
+      method: 'POST',
+      body: {
+        name: 'Dave Isolated',
+        email: `dave+${unique}@example.com`,
+        password: 'StrongPassword!2026',
+      },
+    });
+
+    // Anthropic cannot be registered for embeddings
+    const badAnthropicEmb = await carol.fetchJson('/api/provider-keys', {
+      method: 'POST',
+      body: {
+        provider: 'anthropic',
+        purpose: 'embedding',
+        label: 'Invalid Anthropic Emb',
+        apiKey: 'sk-ant-bad-1234',
+      },
+    });
+    expect(badAnthropicEmb.status).toBe(400);
+
+    // 1. Register Chat key from Anthropic & Embedding key from OpenAI (different providers!)
+    const chatSecret = 'sk-ant-carol-chat-1111';
+    const embSecret = 'sk-openai-carol-emb-2222';
+    const chatKeyRes = await carol.fetchJson('/api/provider-keys', {
+      method: 'POST',
+      body: {
+        provider: 'anthropic',
+        purpose: 'chat',
+        label: 'Carol Anthropic Chat',
+        apiKey: chatSecret,
+        activate: true,
+      },
+    });
+    expect(chatKeyRes.status).toBe(201);
+
+    const embKeyRes = await carol.fetchJson('/api/provider-keys', {
+      method: 'POST',
+      body: {
+        provider: 'openai',
+        purpose: 'embedding',
+        label: 'Carol OpenAI Embedding',
+        apiKey: embSecret,
+        activate: true,
+      },
+    });
+    expect(embKeyRes.status).toBe(201);
+
+    const patchRes = await carol.fetchJson('/api/account/ai-settings', {
+      method: 'PATCH',
+      body: {
+        chatProviderKeyId: chatKeyRes.data.item.id,
+        chatModel: 'claude-sonnet-4-20250514',
+        embeddingProviderKeyId: embKeyRes.data.item.id,
+        embeddingModel: 'text-embedding-3-small',
+      },
+    });
+    expect(patchRes.status).toBe(200);
+
+    const settingsRes = await carol.fetchJson('/api/account/ai-settings');
+    expect(settingsRes.status).toBe(200);
+    expect(settingsRes.data.settings.chatProviderKeyId).toBe(chatKeyRes.data.item.id);
+    expect(settingsRes.data.settings.embeddingProviderKeyId).toBe(embKeyRes.data.item.id);
+    expect(settingsRes.data.settings.chatModel).toBe('claude-sonnet-4-20250514');
+    expect(settingsRes.data.settings.embeddingModel).toBe('text-embedding-3-small');
+    expect(JSON.stringify(settingsRes.data)).not.toContain(chatSecret);
+    expect(JSON.stringify(settingsRes.data)).not.toContain(embSecret);
+
+    // Cannot assign a chat key into embeddingProviderKeyId (purpose mismatch)
+    const purposeMismatch = await carol.fetchJson('/api/account/ai-settings', {
+      method: 'PATCH',
+      body: { embeddingProviderKeyId: chatKeyRes.data.item.id },
+    });
+    expect(purposeMismatch.status).toBe(400);
+
+    // Cross-tenant isolation: Dave cannot bind Carol's keys
+    const daveCross = await dave.fetchJson('/api/account/ai-settings', {
+      method: 'PATCH',
+      body: { embeddingProviderKeyId: embKeyRes.data.item.id },
+    });
+    expect(daveCross.status).toBe(400);
+
+    // 2. Create two agents without per-agent keys: both inherit global account settings
+    const [a1, a2] = await Promise.all([
+      carol.fetchJson('/api/agents', { method: 'POST', body: { name: 'Sales Agent' } }),
+      carol.fetchJson('/api/agents', { method: 'POST', body: { name: 'Support Agent' } }),
+    ]);
+    expect(a1.status).toBe(201);
+    expect(a2.status).toBe(201);
+    expect(a1.data.item.chatModel).toBe('claude-sonnet-4-20250514');
+    expect(a1.data.item.embeddingModel).toBe('text-embedding-3-small');
+    expect(a2.data.item.chatModel).toBe('claude-sonnet-4-20250514');
+    expect(a2.data.item.embeddingModel).toBe('text-embedding-3-small');
+
+    // 3. Activate mock keys globally and verify both agents share them for RAG + chat
+    const mockChatKey = await carol.fetchJson('/api/provider-keys', {
+      method: 'POST',
+      body: {
+        provider: 'mock',
+        purpose: 'chat',
+        label: 'Mock Chat',
+        apiKey: 'mock-chat',
+        activate: true,
+      },
+    });
+    const mockEmbKey = await carol.fetchJson('/api/provider-keys', {
+      method: 'POST',
+      body: {
+        provider: 'mock',
+        purpose: 'embedding',
+        label: 'Mock Emb',
+        apiKey: 'mock-emb',
+        activate: true,
+      },
+    });
+    expect(mockChatKey.status).toBe(201);
+    expect(mockEmbKey.status).toBe(201);
+
+    const mockSettings = await carol.fetchJson('/api/account/ai-settings', {
+      method: 'PATCH',
+      body: {
+        chatModel: 'mock-chat-v1',
+        embeddingModel: 'qwen3-embedding-0.6b',
+      },
+    });
+    expect(mockSettings.status).toBe(200);
+
+    const kbRes = await carol.fetchJson(`/api/agents/${a2.data.item.id}/knowledge/text`, {
+      method: 'POST',
+      body: {
+        title: 'Global Account Policy',
+        content: 'Global BYOK keys apply across all agents including Support Agent SLA-24H.',
+      },
+    });
+    expect(kbRes.status).toBe(201);
+
+    const kbReady = await waitFor(
+      () => carol.fetchJson(`/api/agents/${a2.data.item.id}/knowledge`),
+      (r) => r.data.items?.[0]?.status === 'ready'
+    );
+    expect(kbReady.data.items[0].status).toBe('ready');
+
+    const [chat1, chat2] = await Promise.all([
+      carol.fetchJson(`/api/agents/${a1.data.item.id}/playground/chat`, {
+        method: 'POST',
+        body: { message: 'Hello from sales', pageUrl: '/pricing' },
+      }),
+      carol.fetchJson(`/api/agents/${a2.data.item.id}/playground/chat`, {
+        method: 'POST',
+        body: { message: 'Tell me about SLA-24H', pageUrl: '/docs/sla' },
+      }),
+    ]);
+    expect(chat1.status).toBe(200);
+    expect(chat1.data.trace.model).toBe('mock-chat-v1');
+    expect(chat2.status).toBe(200);
+    expect(chat2.data.trace.model).toBe('mock-chat-v1');
+    expect(chat2.data.text).toContain('SLA-24H');
+
+    // 4. Account Profile & Change Password
+    const profRes = await carol.fetchJson('/api/account/profile');
+    expect(profRes.status).toBe(200);
+    expect(profRes.data.profile.name).toBe('Carol Multi-Agent');
+    expect(profRes.data.profile.workspaceName).toBe('Carol Global AI');
+    expect(profRes.data.profile.agentsCount).toBe(2);
+    expect(JSON.stringify(profRes.data)).not.toContain('passwordHash');
+
+    const profPatch = await carol.fetchJson('/api/account/profile', {
+      method: 'PATCH',
+      body: { name: 'Carol Updated', workspaceName: 'Carol Studio' },
+    });
+    expect(profPatch.status).toBe(200);
+    expect(profPatch.data.profile.name).toBe('Carol Updated');
+    expect(profPatch.data.profile.workspaceName).toBe('Carol Studio');
+
+    const wrongPw = await carol.fetchJson('/api/account/change-password', {
+      method: 'POST',
+      body: { currentPassword: 'WrongPassword!123', newPassword: 'NewStrongPassword!2026' },
+    });
+    expect(wrongPw.status).toBe(401);
+
+    const okPw = await carol.fetchJson('/api/account/change-password', {
+      method: 'POST',
+      body: { currentPassword: 'StrongPassword!2026', newPassword: 'NewStrongPassword!2026' },
+    });
+    expect(okPw.status).toBe(200);
+
+    const loginNewPw = await createTestClient(baseUrl).fetchJson('/api/auth/login', {
+      method: 'POST',
+      body: { email: `carol+${unique}@example.com`, password: 'NewStrongPassword!2026' },
+    });
+    expect(loginNewPw.status).toBe(200);
   });
 
   it('Live Vercel AI Gateway Smoke Test (runs when AI_GATEWAY_API_KEY is configured in .env)', async () => {

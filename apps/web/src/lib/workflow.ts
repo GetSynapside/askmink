@@ -31,7 +31,171 @@ export interface AgentWorkflowState {
 
 export const WORKFLOW_START_MARKER = '<!-- ASKMINK_WORKFLOW_START -->';
 export const WORKFLOW_END_MARKER = '<!-- ASKMINK_WORKFLOW_END -->';
+export const RULES_START_MARKER = '<!-- ASKMINK_RULES_START -->';
+export const RULES_END_MARKER = '<!-- ASKMINK_RULES_END -->';
 export const DISCONNECTED_TARGET = '__none__';
+
+export type ResponseLengthOption = 'short' | 'balanced' | 'detailed';
+
+export type TonePresetId =
+  | 'professional'
+  | 'friendly'
+  | 'direct'
+  | 'consultative'
+  | 'empathetic'
+  | 'no_emojis';
+
+export const TONE_PRESET_IDS: readonly TonePresetId[] = [
+  'professional',
+  'friendly',
+  'direct',
+  'consultative',
+  'empathetic',
+  'no_emojis',
+] as const;
+
+const TONE_PRESET_PROMPT_TEXT: Record<TonePresetId, string> = {
+  professional: 'Professional',
+  friendly: 'Friendly and welcoming',
+  direct: 'Direct and to the point',
+  consultative: 'Consultative and helpful',
+  empathetic: 'Empathetic and patient',
+  no_emojis: 'Do not use emojis',
+};
+
+const RESPONSE_LENGTH_PROMPT_TEXT: Record<ResponseLengthOption, string> = {
+  short: 'Keep responses short and concise (1–3 sentences or brief bullet points).',
+  balanced: 'Provide clear, balanced responses with just enough detail to be helpful.',
+  detailed: 'Provide thorough, detailed responses with examples and step-by-step explanations when useful.',
+};
+
+export interface PromptRulesConfig {
+  basePrompt: string;
+  tonePresets: TonePresetId[];
+  toneCustom: string;
+  responseLength: ResponseLengthOption;
+  dontRules: string;
+}
+
+export function parsePromptRules(fullPrompt: string): PromptRulesConfig {
+  const withoutWorkflow = extractBaseSystemPrompt(fullPrompt || '');
+  const startIdx = withoutWorkflow.indexOf(RULES_START_MARKER);
+  const endIdx = withoutWorkflow.indexOf(RULES_END_MARKER);
+
+  if (startIdx === -1 || endIdx === -1 || endIdx < startIdx) {
+    return {
+      basePrompt: withoutWorkflow,
+      tonePresets: [],
+      toneCustom: '',
+      responseLength: 'balanced',
+      dontRules: '',
+    };
+  }
+
+  const before = withoutWorkflow.slice(0, startIdx).trim();
+  const after = withoutWorkflow.slice(endIdx + RULES_END_MARKER.length).trim();
+  const basePrompt = [before, after].filter(Boolean).join('\n\n');
+  const block = withoutWorkflow.slice(startIdx + RULES_START_MARKER.length, endIdx);
+
+  let tonePresets: TonePresetId[] = [];
+  let responseLength: ResponseLengthOption = 'balanced';
+
+  const metaMatch = block.match(/<!--\s*ASKMINK_RULES_META:(\{.*?\})\s*-->/);
+  if (metaMatch?.[1]) {
+    try {
+      const parsed = JSON.parse(metaMatch[1]) as {
+        tonePresets?: unknown;
+        responseLength?: unknown;
+      };
+      if (Array.isArray(parsed.tonePresets)) {
+        tonePresets = parsed.tonePresets.filter(
+          (v): v is TonePresetId =>
+            typeof v === 'string' && (TONE_PRESET_IDS as readonly string[]).includes(v)
+        );
+      }
+      if (
+        parsed.responseLength === 'short' ||
+        parsed.responseLength === 'balanced' ||
+        parsed.responseLength === 'detailed'
+      ) {
+        responseLength = parsed.responseLength;
+      }
+    } catch {
+      // Ignore malformed meta JSON
+    }
+  }
+
+  const extractSection = (heading: string): string => {
+    const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(`## ${escaped}\\n([\\s\\S]*?)(?=\\n## |$)`);
+    const m = block.match(regex);
+    return m?.[1]?.trim() || '';
+  };
+
+  const toneSection = extractSection('Tone & Personality');
+  const toneCustom = toneSection
+    .split('\n')
+    .filter((line) => !line.startsWith('Traits: '))
+    .join('\n')
+    .trim();
+
+  const dontRules = extractSection('Restrictions (What NOT to do)');
+
+  return {
+    basePrompt,
+    tonePresets,
+    toneCustom,
+    responseLength,
+    dontRules,
+  };
+}
+
+export function compilePromptRules(config: PromptRulesConfig): string {
+  const cleanBase = config.basePrompt.trim();
+  const tonePresets = config.tonePresets.filter((id) => TONE_PRESET_IDS.includes(id));
+  const toneCustom = config.toneCustom.trim();
+  const dontRules = config.dontRules.trim();
+  const responseLength = config.responseLength;
+
+  const hasAnyRule =
+    tonePresets.length > 0 ||
+    toneCustom.length > 0 ||
+    responseLength !== 'balanced' ||
+    dontRules.length > 0;
+
+  if (!hasAnyRule) {
+    return cleanBase;
+  }
+
+  const sections: string[] = [
+    RULES_START_MARKER,
+    `<!-- ASKMINK_RULES_META:${JSON.stringify({ tonePresets, responseLength })} -->`,
+  ];
+
+  if (tonePresets.length > 0 || toneCustom.length > 0) {
+    const toneLines: string[] = ['## Tone & Personality'];
+    if (tonePresets.length > 0) {
+      toneLines.push(`Traits: ${tonePresets.map((id) => TONE_PRESET_PROMPT_TEXT[id]).join(', ')}`);
+    }
+    if (toneCustom) {
+      toneLines.push(toneCustom);
+    }
+    sections.push(toneLines.join('\n'));
+  }
+
+  if (responseLength !== 'balanced') {
+    sections.push(`## Response Length\n${RESPONSE_LENGTH_PROMPT_TEXT[responseLength]}`);
+  }
+
+  if (dontRules) {
+    sections.push(`## Restrictions (What NOT to do)\n${dontRules}`);
+  }
+
+  sections.push(RULES_END_MARKER);
+  const rulesBlock = sections.join('\n\n');
+
+  return cleanBase ? `${cleanBase}\n\n${rulesBlock}` : rulesBlock;
+}
 
 function sanitizeMermaidText(text: string): string {
   return text.replace(/"/g, "'").replace(/[\r\n]+/g, ' ').replace(/[[\]{}]/g, '').trim() || 'Step';

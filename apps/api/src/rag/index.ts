@@ -362,3 +362,28 @@ export async function checkEmbeddingModelMismatch(
     chunkCount: mismatched.count,
   };
 }
+
+export async function checkWorkspaceEmbeddingModelMismatch(
+  db: AskminkDb,
+  workspaceId: string,
+  newEmbeddingModel: string
+): Promise<{ hasIndexedChunks: boolean; currentModel: string | null; chunkCount: number }> {
+  const result = await db
+    .select({
+      embeddingModel: knowledgeChunks.embeddingModel,
+      count: sql<number>`count(*)::int`,
+    })
+    .from(knowledgeChunks)
+    .where(eq(knowledgeChunks.workspaceId, workspaceId))
+    .groupBy(knowledgeChunks.embeddingModel);
+
+  const mismatched = result.find((r) => r.embeddingModel !== newEmbeddingModel && r.count > 0);
+  if (!mismatched) {
+    return { hasIndexedChunks: false, currentModel: null, chunkCount: 0 };
+  }
+  return {
+    hasIndexedChunks: true,
+    currentModel: mismatched.embeddingModel,
+    chunkCount: mismatched.count,
+  };
+}

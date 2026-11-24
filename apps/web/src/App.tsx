@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   BookOpen,
   Bot,
@@ -7,14 +7,16 @@ import {
   ChevronsUpDown,
   Code2,
   Copy,
-  Cpu,
+  FileText,
   GitBranch,
   Globe,
   Inbox,
+  KeyRound,
   LayoutDashboard,
   LifeBuoy,
   LogOut,
   Menu,
+  MoreVertical,
   Paintbrush,
   Plus,
   Search,
@@ -22,21 +24,66 @@ import {
   ShoppingBag,
   Sparkles,
   Trash2,
+  User,
   Users,
   Webhook,
   Wrench,
   X,
 } from 'lucide-react';
 import type { SupportedLanguage } from '@askmink/shared';
-import { apiRequest } from './lib/api';
-import { DICT } from './lib/i18n';
-import { AuthScreen } from './components/AuthScreen';
-import { OverviewView } from './components/OverviewView';
-import { BehaviorView } from './components/BehaviorView';
-import { PlaygroundView } from './components/PlaygroundView';
-import { WidgetStudioView } from './components/WidgetStudioView';
-import { AgentOnboardingFlow } from './components/AgentOnboardingFlow';
+import { apiRequest } from '@/lib/api';
+import { DICT } from '@/lib/i18n';
+import { cn } from '@/lib/utils';
+import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import { Button } from '@/components/ui/button';
+import { Card } from '@/components/ui/card';
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import {
+  CommandDialog,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from '@/components/ui/command';
+import { AuthScreen } from '@/components/AuthScreen';
+import { OverviewView } from '@/components/OverviewView';
+import { BehaviorView } from '@/components/BehaviorView';
+import { PlaygroundView } from '@/components/PlaygroundView';
+import { WidgetStudioView } from '@/components/WidgetStudioView';
+import { AgentOnboardingFlow } from '@/components/AgentOnboardingFlow';
+import {
+  AccountProfileView,
+  AccountSettingsView,
   InboxView,
   KnowledgeView,
   LeadsView,
@@ -46,13 +93,43 @@ import {
   TicketsView,
   ToolsMcpView,
   WebhooksView,
-} from './components/ManagementViews';
+} from '@/components/ManagementViews';
 
 const LANG_STORAGE_KEY = 'askmink_ui_lang';
 const AGENT_STORAGE_KEY = 'askmink_active_agent';
 
+const LANGUAGE_OPTIONS: { code: SupportedLanguage; label: string }[] = [
+  { code: 'en', label: 'English' },
+  { code: 'pt', label: 'Português' },
+  { code: 'es', label: 'Español' },
+];
+
+function getUserInitials(name?: string, email?: string): string {
+  const source = (name || email || 'U').trim();
+  const parts = source.split(/\s+/).filter(Boolean);
+  const first = parts[0];
+  const last = parts[parts.length - 1];
+  if (parts.length >= 2 && first && last) {
+    return `${first.charAt(0)}${last.charAt(0)}`.toUpperCase();
+  }
+  return source.slice(0, 2).toUpperCase();
+}
+
+function maskEmail(email?: string): string {
+  if (!email) return '';
+  const atIndex = email.indexOf('@');
+  if (atIndex <= 0) return email;
+  const local = email.slice(0, atIndex);
+  const domain = email.slice(atIndex + 1);
+  const visible = local.length <= 2 ? local[0] : local.slice(0, 2);
+  return `${visible}***@${domain}`;
+}
+
+const ACCOUNT_TABS = new Set(['account/byok', 'account/settings', 'account/profile']);
+
 const VALID_TABS = new Set([
   'overview',
+  'workflow',
   'behavior',
   'widget',
   'playground',
@@ -64,7 +141,9 @@ const VALID_TABS = new Set([
   'tickets',
   'leads',
   'webhooks',
-  'settings',
+  'account/byok',
+  'account/settings',
+  'account/profile',
 ]);
 
 function resolveInitialLanguage(): SupportedLanguage {
@@ -84,7 +163,17 @@ function resolveInitialLanguage(): SupportedLanguage {
 
 function resolveTabFromLocation(): string {
   if (typeof window === 'undefined') return 'overview';
-  const seg = window.location.pathname.replace(/^\/+|\/+$/g, '').split('/')[0] || '';
+  const path = window.location.pathname.replace(/^\/+|\/+$/g, '');
+  if (path === 'account/byok' || path === 'byok') {
+    return 'account/byok';
+  }
+  if (path === 'account/settings' || path === 'account/setting' || path === 'settings') {
+    return 'account/settings';
+  }
+  if (path === 'account/profile' || path === 'profile') {
+    return 'account/profile';
+  }
+  const seg = path.split('/')[0] || '';
   return VALID_TABS.has(seg) ? seg : 'overview';
 }
 
@@ -110,20 +199,12 @@ export function App() {
   const [lang, setLangState] = useState<SupportedLanguage>(resolveInitialLanguage);
 
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [agentSwitcherOpen, setAgentSwitcherOpen] = useState(false);
   const [showNewAgentWizard, setShowNewAgentWizard] = useState(false);
   const [agentPendingDelete, setAgentPendingDelete] = useState<any | null>(null);
   const [deletingAgent, setDeletingAgent] = useState(false);
   const [showEmbed, setShowEmbed] = useState(false);
   const [copiedSnippet, setCopiedSnippet] = useState(false);
   const [showQuickJump, setShowQuickJump] = useState(false);
-  const [quickQuery, setQuickQuery] = useState('');
-
-  const embedDialogRef = useRef<HTMLDialogElement>(null);
-  const quickJumpDialogRef = useRef<HTMLDialogElement>(null);
-  const deleteDialogRef = useRef<HTMLDialogElement>(null);
-  const quickInputRef = useRef<HTMLInputElement>(null);
-  const switcherRef = useRef<HTMLDivElement>(null);
 
   const t = DICT[lang];
 
@@ -139,8 +220,11 @@ export function App() {
   function updateBrowserUrl(nextTab: string, nextAgentId?: string, replace = false) {
     if (typeof window === 'undefined') return;
     const safeTab = VALID_TABS.has(nextTab) ? nextTab : 'overview';
+    const isAccountTab = ACCOUNT_TABS.has(safeTab);
     const params = new URLSearchParams(window.location.search);
-    if (nextAgentId) {
+    if (isAccountTab) {
+      params.delete('agent');
+    } else if (nextAgentId) {
       params.set('agent', nextAgentId);
     } else if (nextAgentId === '') {
       params.delete('agent');
@@ -180,7 +264,8 @@ export function App() {
       label: t.navGroupCore,
       items: [
         { id: 'overview', label: t.overview, icon: LayoutDashboard },
-        { id: 'behavior', label: t.behavior, icon: GitBranch },
+        { id: 'workflow', label: t.workflowNavLabel || 'Workflow', icon: GitBranch },
+        { id: 'behavior', label: t.tabPromptRules, icon: FileText },
         { id: 'widget', label: t.widgetStudio, icon: Paintbrush },
         { id: 'playground', label: t.playground, icon: Sparkles },
         { id: 'inbox', label: t.inbox, icon: Inbox },
@@ -203,12 +288,17 @@ export function App() {
         { id: 'tickets', label: t.tickets, icon: LifeBuoy },
         { id: 'leads', label: t.navLeads, icon: Users },
         { id: 'webhooks', label: t.webhooks, icon: Webhook },
-        { id: 'settings', label: t.settings, icon: Settings },
       ],
     },
   ];
 
-  const allNavItems = navGroups.flatMap((g) => g.items);
+  const accountNavItems = [
+    { id: 'account/byok', label: t.byokNavLabel || 'BYOK', icon: KeyRound },
+    { id: 'account/settings', label: t.settingsNavLabel || 'Settings', icon: Settings },
+    { id: 'account/profile', label: t.profileNavLabel || 'Profile', icon: User },
+  ];
+
+  const allNavItems = [...navGroups.flatMap((g) => g.items), ...accountNavItems];
   const currentNav = allNavItems.find((n) => n.id === tab);
 
   async function loadAgents(preferredId?: string) {
@@ -239,8 +329,18 @@ export function App() {
 
   // Ensure canonical URL path on mount and sync browser Back/Forward
   useEffect(() => {
-    if (window.location.pathname === '/' || !VALID_TABS.has(resolveTabFromLocation())) {
-      updateBrowserUrl(tab, activeAgentId || undefined, true);
+    const initialPath = window.location.pathname.replace(/^\/+|\/+$/g, '');
+    const normalizedPath = `/${tab}`;
+    if (
+      window.location.pathname === '/' ||
+      initialPath === 'settings' ||
+      initialPath === 'account/setting' ||
+      initialPath === 'byok' ||
+      initialPath === 'profile' ||
+      (ACCOUNT_TABS.has(tab) && window.location.search.includes('agent=')) ||
+      window.location.pathname !== normalizedPath
+    ) {
+      updateBrowserUrl(tab, ACCOUNT_TABS.has(tab) ? undefined : activeAgentId || undefined, true);
     }
     function onPopState() {
       const nextTab = resolveTabFromLocation();
@@ -279,60 +379,12 @@ export function App() {
         e.preventDefault();
         setShowQuickJump((prev) => !prev);
       } else if (e.key === 'Escape') {
-        setAgentSwitcherOpen(false);
         setMobileMenuOpen(false);
       }
     }
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, []);
-
-  // Close agent switcher on outside click
-  useEffect(() => {
-    if (!agentSwitcherOpen) return;
-    function onPointerDown(e: MouseEvent) {
-      if (switcherRef.current && !switcherRef.current.contains(e.target as Node)) {
-        setAgentSwitcherOpen(false);
-      }
-    }
-    document.addEventListener('mousedown', onPointerDown);
-    return () => document.removeEventListener('mousedown', onPointerDown);
-  }, [agentSwitcherOpen]);
-
-  // Sync native <dialog> for Embed modal
-  useEffect(() => {
-    const dialog = embedDialogRef.current;
-    if (!dialog) return;
-    if (showEmbed && !dialog.open) {
-      dialog.showModal();
-    } else if (!showEmbed && dialog.open) {
-      dialog.close();
-    }
-  }, [showEmbed]);
-
-  // Sync native <dialog> for Quick Jump modal
-  useEffect(() => {
-    const dialog = quickJumpDialogRef.current;
-    if (!dialog) return;
-    if (showQuickJump && !dialog.open) {
-      setQuickQuery('');
-      dialog.showModal();
-      requestAnimationFrame(() => quickInputRef.current?.focus());
-    } else if (!showQuickJump && dialog.open) {
-      dialog.close();
-    }
-  }, [showQuickJump]);
-
-  // Sync native <dialog> for Delete Agent confirmation
-  useEffect(() => {
-    const dialog = deleteDialogRef.current;
-    if (!dialog) return;
-    if (agentPendingDelete && !dialog.open) {
-      dialog.showModal();
-    } else if (!agentPendingDelete && dialog.open) {
-      dialog.close();
-    }
-  }, [agentPendingDelete]);
 
   async function confirmDeleteAgent() {
     if (!agentPendingDelete || deletingAgent) return;
@@ -374,7 +426,7 @@ export function App() {
 
   if (checking) {
     return (
-      <div className="min-h-screen flex items-center justify-center text-xs text-[#6B7280]">
+      <div className="min-h-screen flex items-center justify-center text-xs text-muted-foreground">
         Loading Askmink...
       </div>
     );
@@ -394,7 +446,7 @@ export function App() {
     );
   }
 
-  // Mandatory Full-Screen Onboarding when user has 0 agents (right after signup or after deleting all agents)
+  // Mandatory Full-Screen Onboarding when user has 0 agents
   if (agentsLoaded && agents.length === 0) {
     return (
       <AgentOnboardingFlow
@@ -417,16 +469,8 @@ export function App() {
     ? `<script src="${window.location.origin}/widget.js" data-agent="${activeAgent.id}"></script>`
     : '';
 
-  const normalizedQuery = quickQuery.trim().toLowerCase();
-  const filteredNav = allNavItems.filter(
-    (item) => !normalizedQuery || (item.label || '').toLowerCase().includes(normalizedQuery)
-  );
-  const filteredAgents = agents.filter(
-    (a) => !normalizedQuery || String(a.name || '').toLowerCase().includes(normalizedQuery)
-  );
-
   return (
-    <div className="h-screen flex bg-[#F8F9FB] overflow-hidden">
+    <div className="h-screen flex bg-background overflow-hidden">
       {/* Mobile backdrop */}
       {mobileMenuOpen && (
         <div
@@ -439,167 +483,138 @@ export function App() {
       {/* Unified Primary Sidebar */}
       <aside
         id="primary-sidebar"
-        className={`fixed inset-y-0 left-0 z-40 w-64 bg-white border-r border-[#EAECEF] flex flex-col shrink-0 transition-transform duration-200 ease-out lg:static lg:translate-x-0 ${
+        className={cn(
+          'fixed inset-y-0 left-0 z-40 w-64 bg-sidebar border-r border-sidebar-border flex flex-col shrink-0 transition-transform duration-200 ease-out lg:static lg:translate-x-0',
           mobileMenuOpen ? 'translate-x-0 shadow-xl' : '-translate-x-full'
-        }`}
+        )}
       >
         {/* Brand Header */}
-        <div className="h-14 px-4 border-b border-[#EAECEF] flex items-center justify-between shrink-0">
+        <div className="h-14 px-4 border-b border-sidebar-border flex items-center justify-between shrink-0">
           <div className="flex items-center gap-2.5 min-w-0">
             <div
-              className="w-8 h-8 rounded-lg bg-[#18181B] text-white flex items-center justify-center shadow-xs shrink-0"
+              className="size-8 rounded-lg bg-primary text-primary-foreground flex items-center justify-center shadow-xs shrink-0"
               aria-hidden="true"
             >
-              <Sparkles className="w-4 h-4" />
+              <Sparkles className="size-4" />
             </div>
             <div className="min-w-0">
-              <div className="font-semibold text-sm text-[#111827] leading-tight truncate">
+              <div className="font-semibold text-sm text-foreground leading-tight truncate">
                 Askmink
               </div>
-              <div className="text-[10px] text-[#6B7280] leading-tight truncate">
+              <div className="text-[10px] text-muted-foreground leading-tight truncate">
                 by Synapside
               </div>
             </div>
           </div>
 
-          <button
+          <Button
             type="button"
+            variant="ghost"
+            size="icon"
             onClick={() => setMobileMenuOpen(false)}
             aria-label={t.closeMenu}
-            className="lg:hidden w-8 h-8 rounded-lg text-[#6B7280] hover:bg-[#F3F4F6] hover:text-[#111827] flex items-center justify-center"
+            className="lg:hidden"
           >
-            <X className="w-4 h-4" aria-hidden="true" />
-          </button>
+            <X className="size-4" aria-hidden="true" />
+          </Button>
         </div>
 
-        {/* Agent Switcher */}
-        <div className="p-3 border-b border-[#F3F4F6] relative" ref={switcherRef}>
+        {/* Agent Switcher (shadcn DropdownMenu) */}
+        <div className="p-3 border-b border-sidebar-border/70">
           {activeAgent ? (
-            <>
-              <button
-                type="button"
-                onClick={() => setAgentSwitcherOpen((prev) => !prev)}
-                aria-expanded={agentSwitcherOpen}
-                aria-controls="agent-switcher-menu"
-                className="w-full p-2 rounded-xl border border-[#EAECEF] bg-[#FAFAFB] hover:bg-[#F3F4F6]/80 hover:border-[#D1D5DB] transition flex items-center gap-2.5 text-left"
-              >
-                <span
-                  className="w-8 h-8 rounded-lg text-white flex items-center justify-center shrink-0"
-                  style={{ backgroundColor: activeAgent.primaryColor || '#2563EB' }}
-                  aria-hidden="true"
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  className="w-full p-2 rounded-xl border border-border bg-muted/40 hover:bg-accent/70 transition flex items-center gap-2.5 text-left cursor-pointer"
                 >
-                  <Bot className="w-4 h-4" />
-                </span>
-                <span className="flex-1 min-w-0">
-                  <span className="block text-xs font-semibold text-[#111827] truncate">
+                  <span
+                    className="size-8 rounded-lg text-white flex items-center justify-center shrink-0"
+                    style={{ backgroundColor: activeAgent.primaryColor || '#2563EB' }}
+                    aria-hidden="true"
+                  >
+                    <Bot className="size-4" />
+                  </span>
+                  <span className="flex-1 min-w-0 text-xs font-semibold text-foreground truncate">
                     {activeAgent.name}
                   </span>
-                  <span className="flex items-center gap-1.5 text-[11px] text-[#6B7280] truncate">
-                    <span
-                      className="w-1.5 h-1.5 rounded-full bg-[#10B981] shrink-0"
-                      aria-hidden="true"
-                    />
-                    <span className="truncate">
-                      {activeAgent.chatModel || 'tencent/hy4-flash'}
-                    </span>
-                  </span>
-                </span>
-                <ChevronsUpDown
-                  className="w-3.5 h-3.5 text-[#9CA3AF] shrink-0"
-                  aria-hidden="true"
-                />
-              </button>
+                  <ChevronsUpDown
+                    className="size-3.5 text-muted-foreground shrink-0"
+                    aria-hidden="true"
+                  />
+                </button>
+              </DropdownMenuTrigger>
 
-              {agentSwitcherOpen && (
-                <div
-                  id="agent-switcher-menu"
-                  className="absolute left-3 right-3 top-[calc(100%-4px)] z-50 bg-white border border-[#E5E7EB] rounded-xl shadow-lg p-1.5 space-y-1"
-                >
-                  <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-[#9CA3AF]">
-                    {t.agentsSection} ({agents.length})
-                  </div>
-                  <div className="max-h-52 overflow-y-auto sidebar-scroll space-y-0.5">
-                    {agents.map((a) => {
-                      const isSelected = activeAgent.id === a.id;
-                      return (
-                        <div key={a.id} className="flex items-center gap-1 group">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setActiveAgentId(a.id);
-                              setAgentSwitcherOpen(false);
-                            }}
-                            className={`flex-1 min-w-0 px-2 py-1.5 rounded-lg text-xs flex items-center justify-between gap-2 transition text-left ${
-                              isSelected
-                                ? 'bg-[#F3F4F6] text-[#111827] font-semibold'
-                                : 'text-[#4B5563] hover:bg-[#F9FAFB] hover:text-[#111827]'
-                            }`}
-                          >
-                            <span className="truncate">{a.name}</span>
-                            {isSelected && (
-                              <Check
-                                className="w-3.5 h-3.5 text-[#111827] shrink-0"
-                                aria-hidden="true"
-                              />
-                            )}
-                          </button>
-                          <button
-                            type="button"
-                            aria-label={`${t.deleteAgent}: ${a.name}`}
-                            onClick={() => {
-                              setAgentSwitcherOpen(false);
-                              setAgentPendingDelete(a);
-                            }}
-                            className="w-7 h-7 rounded-lg text-[#9CA3AF] hover:text-[#DC2626] hover:bg-[#FEF2F2] flex items-center justify-center shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
-                          </button>
-                        </div>
-                      );
-                    })}
-                  </div>
-                  <div className="pt-1 mt-1 border-t border-[#F3F4F6]">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setAgentSwitcherOpen(false);
-                        setShowNewAgentWizard(true);
-                      }}
-                      className="w-full px-2 py-1.5 rounded-lg text-xs font-medium text-[#111827] hover:bg-[#F3F4F6] flex items-center gap-2 transition"
-                    >
-                      <Plus className="w-3.5 h-3.5" aria-hidden="true" />
-                      <span>{t.newAgent}</span>
-                    </button>
-                  </div>
+              <DropdownMenuContent align="start" className="w-[232px]">
+                <DropdownMenuLabel>
+                  {t.agentsSection} ({agents.length})
+                </DropdownMenuLabel>
+                <div className="max-h-52 overflow-y-auto sidebar-scroll space-y-0.5">
+                  {agents.map((a) => {
+                    const isSelected = activeAgent.id === a.id;
+                    return (
+                      <div key={a.id} className="flex items-center gap-1 group">
+                        <DropdownMenuItem
+                          onSelect={() => setActiveAgentId(a.id)}
+                          className={cn(
+                            'flex-1 min-w-0 justify-between',
+                            isSelected && 'bg-accent font-semibold text-accent-foreground'
+                          )}
+                        >
+                          <span className="truncate">{a.name}</span>
+                          {isSelected && <Check className="size-3.5 shrink-0" aria-hidden="true" />}
+                        </DropdownMenuItem>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon-sm"
+                          aria-label={`${t.deleteAgent}: ${a.name}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setAgentPendingDelete(a);
+                          }}
+                          className="text-muted-foreground hover:text-destructive hover:bg-destructive/10 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 shrink-0"
+                        >
+                          <Trash2 className="size-3.5" aria-hidden="true" />
+                        </Button>
+                      </div>
+                    );
+                  })}
                 </div>
-              )}
-            </>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onSelect={() => setShowNewAgentWizard(true)}
+                  className="font-medium"
+                >
+                  <Plus className="size-3.5" aria-hidden="true" />
+                  <span>{t.newAgent}</span>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           ) : (
-            <button
-              type="button"
-              onClick={() => setShowNewAgentWizard(true)}
-              className="w-full py-2 px-3 rounded-lg bg-[#18181B] hover:bg-[#27272A] text-white text-xs font-medium flex items-center justify-center gap-2 transition"
-            >
-              <Plus className="w-3.5 h-3.5" aria-hidden="true" />
+            <Button type="button" onClick={() => setShowNewAgentWizard(true)} className="w-full">
+              <Plus className="size-3.5" aria-hidden="true" />
               <span>{t.newAgent}</span>
-            </button>
+            </Button>
           )}
         </div>
 
-        {/* Grouped Navigation (real anchor links for open-in-new-tab + History API) */}
+        {/* Grouped Navigation */}
         <nav aria-label="Primary" className="flex-1 overflow-y-auto sidebar-scroll px-3 py-3 space-y-5">
           {navGroups.map((group) => (
             <div key={group.id}>
-              <div className="px-2.5 mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-[#9CA3AF]">
+              <div className="px-2.5 mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/80">
                 {group.label}
               </div>
               <ul className="space-y-0.5">
                 {group.items.map((item) => {
                   const Icon = item.icon;
                   const isActive = tab === item.id;
-                  const href = activeAgentId
-                    ? `/${item.id}?agent=${encodeURIComponent(activeAgentId)}`
-                    : `/${item.id}`;
+                  const isAccountItem = ACCOUNT_TABS.has(item.id);
+                  const href =
+                    !isAccountItem && activeAgentId
+                      ? `/${item.id}?agent=${encodeURIComponent(activeAgentId)}`
+                      : `/${item.id}`;
                   return (
                     <li key={item.id}>
                       <a
@@ -612,16 +627,18 @@ export function App() {
                           handleSelectTab(item.id);
                         }}
                         aria-current={isActive ? 'page' : undefined}
-                        className={`nav-item w-full px-2.5 py-2 rounded-lg text-[13px] flex items-center gap-2.5 transition text-left ${
+                        className={cn(
+                          'nav-item w-full px-2.5 py-2 rounded-lg text-[13px] flex items-center gap-2.5 transition text-left',
                           isActive
-                            ? 'bg-[#F3F4F6] text-[#111827] font-semibold ring-1 ring-inset ring-[#E5E7EB]'
-                            : 'text-[#4B5563] font-medium hover:bg-[#F9FAFB] hover:text-[#111827]'
-                        }`}
+                            ? 'bg-accent text-accent-foreground font-semibold ring-1 ring-inset ring-border'
+                            : 'text-muted-foreground font-medium hover:bg-accent/60 hover:text-foreground'
+                        )}
                       >
                         <Icon
-                          className={`w-4 h-4 shrink-0 ${
-                            isActive ? 'text-[#111827]' : 'text-[#6B7280]'
-                          }`}
+                          className={cn(
+                            'size-4 shrink-0',
+                            isActive ? 'text-foreground' : 'text-muted-foreground'
+                          )}
                           aria-hidden="true"
                         />
                         <span className="truncate">{item.label}</span>
@@ -634,137 +651,241 @@ export function App() {
           ))}
         </nav>
 
-        {/* Unified Sidebar Footer */}
-        <div className="p-3 border-t border-[#EAECEF] space-y-2.5 shrink-0 bg-[#FAFAFB]/60">
-          <button
-            type="button"
-            onClick={() => handleSelectTab('settings')}
-            className="w-full p-2.5 rounded-xl bg-white border border-[#EAECEF] hover:border-[#D1D5DB] transition text-left flex items-center gap-2.5"
+        {/* Bottom Sidebar: BYOK + Settings + User Profile Submenu */}
+        <div className="shrink-0 bg-sidebar">
+          <nav
+            aria-label={t.accountSectionLabel || 'Account'}
+            className="px-3 pt-2 pb-1.5"
           >
-            <span
-              className="w-7 h-7 rounded-lg bg-[#F3F4F6] text-[#4B5563] flex items-center justify-center shrink-0"
-              aria-hidden="true"
-            >
-              <Cpu className="w-3.5 h-3.5" />
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="block text-[11px] font-semibold text-[#111827] leading-tight">
-                BYOK Self-Hosted
-              </span>
-              <span className="block text-[11px] text-[#6B7280] truncate mt-0.5">
-                {activeAgent?.chatModel || 'tencent/hy4-flash'}
-              </span>
-            </span>
-          </button>
+            <ul className="space-y-0.5">
+              {[
+                { id: 'account/byok', label: t.byokNavLabel || 'BYOK', icon: KeyRound },
+                { id: 'account/settings', label: t.settingsNavLabel || 'Settings', icon: Settings },
+              ].map((item) => {
+                const Icon = item.icon;
+                const isActive = tab === item.id;
+                return (
+                  <li key={item.id}>
+                    <a
+                      href={`/${item.id}`}
+                      onClick={(e) => {
+                        if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) {
+                          return;
+                        }
+                        e.preventDefault();
+                        handleSelectTab(item.id);
+                      }}
+                      aria-current={isActive ? 'page' : undefined}
+                      className={cn(
+                        'nav-item w-full px-2.5 py-2 rounded-lg text-[13px] flex items-center gap-2.5 transition text-left',
+                        isActive
+                          ? 'text-foreground font-semibold'
+                          : 'text-muted-foreground font-medium hover:bg-accent/60 hover:text-foreground'
+                      )}
+                    >
+                      <Icon
+                        className={cn(
+                          'size-4 shrink-0',
+                          isActive ? 'text-foreground' : 'text-muted-foreground'
+                        )}
+                        aria-hidden="true"
+                      />
+                      <span className="truncate">{item.label}</span>
+                    </a>
+                  </li>
+                );
+              })}
+            </ul>
+          </nav>
 
-          <div className="flex items-center justify-between gap-2">
-            <div
-              className="inline-flex items-center gap-1 p-0.5 rounded-lg bg-[#F3F4F6] border border-[#EAECEF]"
-              role="group"
-              aria-label={t.language}
-            >
-              <Globe className="w-3.5 h-3.5 text-[#6B7280] ml-1.5 mr-0.5" aria-hidden="true" />
-              {(['en', 'pt', 'es'] as SupportedLanguage[]).map((code) => (
+          <div className="px-3 pb-3 pt-1">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
                 <button
-                  key={code}
                   type="button"
-                  onClick={() => setLang(code)}
-                  aria-pressed={lang === code}
-                  className={`px-1.5 py-1 rounded-md text-[10px] font-semibold uppercase transition ${
-                    lang === code
-                      ? 'bg-white text-[#111827] shadow-2xs'
-                      : 'text-[#6B7280] hover:text-[#111827]'
-                  }`}
+                  className="w-full p-2 rounded-xl border border-transparent hover:border-border bg-muted/40 hover:bg-accent/70 data-[state=open]:bg-accent data-[state=open]:border-border transition flex items-center gap-2.5 text-left cursor-pointer"
                 >
-                  {code}
+                  <Avatar className="size-8 rounded-lg shrink-0">
+                    <AvatarFallback className="rounded-lg bg-primary/10 text-primary text-xs font-semibold">
+                      {getUserInitials(user?.name, user?.email)}
+                    </AvatarFallback>
+                  </Avatar>
+                  <span className="flex-1 min-w-0">
+                    <span className="block text-xs font-semibold text-foreground leading-tight truncate">
+                      {user?.name || t.accountSectionLabel || 'Account'}
+                    </span>
+                    {user?.email && (
+                      <span className="block text-[11px] text-muted-foreground leading-tight truncate mt-0.5">
+                        {maskEmail(user.email)}
+                      </span>
+                    )}
+                  </span>
+                  <MoreVertical
+                    className="size-4 text-muted-foreground shrink-0"
+                    aria-hidden="true"
+                  />
                 </button>
-              ))}
-            </div>
+              </DropdownMenuTrigger>
 
-            <button
-              type="button"
-              onClick={handleLogout}
-              className="px-2.5 py-1.5 rounded-lg text-xs font-medium text-[#6B7280] hover:text-[#DC2626] hover:bg-[#FEF2F2] inline-flex items-center gap-1.5 transition"
-            >
-              <LogOut className="w-3.5 h-3.5" aria-hidden="true" />
-              <span>{t.logout}</span>
-            </button>
+              <DropdownMenuContent
+                side="top"
+                align="start"
+                sideOffset={8}
+                className="w-[232px]"
+              >
+                <div className="rounded-lg bg-muted/60 px-2.5 py-2 mb-1">
+                  <div className="text-xs font-semibold text-foreground truncate">
+                    {user?.name || t.accountSectionLabel || 'Account'}
+                  </div>
+                  {user?.email && (
+                    <div className="text-[11px] text-muted-foreground truncate mt-0.5">
+                      {maskEmail(user.email)}
+                    </div>
+                  )}
+                </div>
+
+                <DropdownMenuItem
+                  onSelect={() => handleSelectTab('account/profile')}
+                  className={cn(
+                    tab === 'account/profile' && 'bg-accent font-semibold text-accent-foreground'
+                  )}
+                >
+                  <User className="size-3.5" aria-hidden="true" />
+                  <span className="flex-1 truncate">{t.profileNavLabel || 'Profile'}</span>
+                  {tab === 'account/profile' && (
+                    <Check className="size-3.5 shrink-0" aria-hidden="true" />
+                  )}
+                </DropdownMenuItem>
+
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger>
+                    <Globe className="size-3.5" aria-hidden="true" />
+                    <span className="flex-1 truncate">{t.language}</span>
+                    <span className="text-[10px] font-semibold uppercase text-muted-foreground mr-1">
+                      {lang}
+                    </span>
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent>
+                    <DropdownMenuRadioGroup
+                      value={lang}
+                      onValueChange={(value) => {
+                        if (value === 'en' || value === 'pt' || value === 'es') {
+                          setLang(value);
+                        }
+                      }}
+                    >
+                      {LANGUAGE_OPTIONS.map((option) => (
+                        <DropdownMenuRadioItem key={option.code} value={option.code}>
+                          <span lang={option.code}>{option.label}</span>
+                        </DropdownMenuRadioItem>
+                      ))}
+                    </DropdownMenuRadioGroup>
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+
+                <DropdownMenuSeparator />
+
+                <DropdownMenuItem variant="destructive" onSelect={handleLogout}>
+                  <LogOut className="size-3.5" aria-hidden="true" />
+                  <span>{t.logout}</span>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </div>
       </aside>
 
       {/* Main Column: Topbar + Main Canvas */}
       <div className="flex-1 flex flex-col min-w-0">
-        <header className="h-14 bg-white border-b border-[#EAECEF] px-4 lg:px-5 flex items-center justify-between gap-3 shrink-0">
+        <header className="h-14 bg-card border-b border-border px-4 lg:px-5 flex items-center justify-between gap-3 shrink-0">
           <div className="flex items-center gap-2.5 min-w-0">
-            <button
+            <Button
               type="button"
+              variant="outline"
+              size="icon"
               onClick={() => setMobileMenuOpen(true)}
               aria-label={t.openMenu}
               aria-expanded={mobileMenuOpen}
               aria-controls="primary-sidebar"
-              className="lg:hidden w-8 h-8 rounded-lg border border-[#EAECEF] text-[#4B5563] hover:bg-[#F3F4F6] flex items-center justify-center shrink-0"
+              className="lg:hidden shrink-0"
             >
-              <Menu className="w-4 h-4" aria-hidden="true" />
-            </button>
+              <Menu className="size-4" aria-hidden="true" />
+            </Button>
 
-            <div className="text-xs text-[#6B7280] truncate">
-              <span className="hidden sm:inline">{activeAgent?.name || 'Askmink'} / </span>
-              <span className="font-semibold text-[#111827]">{currentNav?.label}</span>
+            <div className="text-xs text-muted-foreground truncate">
+              <span className="hidden sm:inline">
+                {ACCOUNT_TABS.has(tab)
+                  ? t.accountSectionLabel || 'Account'
+                  : activeAgent?.name || 'Askmink'}{' '}
+                /{' '}
+              </span>
+              <span className="font-semibold text-foreground">{currentNav?.label}</span>
             </div>
           </div>
 
-          <button
+          <Button
             type="button"
+            variant="outline"
             onClick={() => setShowQuickJump(true)}
-            className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#F8F9FB] hover:bg-[#F3F4F6] border border-[#EAECEF] w-72 lg:w-80 text-xs text-[#6B7280] transition text-left"
+            className="hidden md:flex justify-between bg-muted/50 hover:bg-muted w-72 lg:w-80 text-muted-foreground font-normal"
           >
-            <Search className="w-3.5 h-3.5 text-[#9CA3AF] shrink-0" aria-hidden="true" />
-            <span className="flex-1 truncate">{t.searchPlaceholder}</span>
-            <kbd className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-white border border-[#EAECEF] text-[#6B7280]">
+            <span className="inline-flex items-center gap-2 truncate">
+              <Search className="size-3.5 shrink-0" aria-hidden="true" />
+              <span className="truncate">{t.searchPlaceholder}</span>
+            </span>
+            <kbd className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-background border border-border text-muted-foreground">
               ⌘K
             </kbd>
-          </button>
+          </Button>
 
           <div className="flex items-center gap-2 shrink-0">
             {activeAgent && (
-              <button
-                type="button"
-                onClick={() => setShowEmbed(true)}
-                className="px-3 py-1.5 rounded-lg border border-[#EAECEF] hover:bg-[#F9FAFB] text-xs font-medium text-[#111827] inline-flex items-center gap-1.5 transition"
-              >
-                <Code2 className="w-3.5 h-3.5" aria-hidden="true" />
+              <Button type="button" variant="outline" onClick={() => setShowEmbed(true)}>
+                <Code2 className="size-3.5" aria-hidden="true" />
                 <span className="hidden sm:inline">{t.embedWidget}</span>
-              </button>
+              </Button>
             )}
-            <button
-              type="button"
-              onClick={() => handleSelectTab('playground')}
-              className="px-3 py-1.5 rounded-lg bg-[#18181B] hover:bg-[#27272A] text-white text-xs font-medium inline-flex items-center gap-1.5 transition"
-            >
-              <Sparkles className="w-3.5 h-3.5" aria-hidden="true" />
+            <Button type="button" onClick={() => handleSelectTab('playground')}>
+              <Sparkles className="size-3.5" aria-hidden="true" />
               <span>{t.openPlayground}</span>
-            </button>
+            </Button>
           </div>
         </header>
 
         <main className="flex-1 flex flex-col min-h-0 overflow-hidden">
-          {!activeAgent ? (
+          {tab === 'account/byok' ? (
+            <SettingsByokView
+              t={t}
+              onAccountUpdated={() => loadAgents(activeAgent?.id)}
+            />
+          ) : tab === 'account/settings' ? (
+            <AccountSettingsView
+              t={t}
+              onAccountUpdated={() => loadAgents(activeAgent?.id)}
+            />
+          ) : tab === 'account/profile' ? (
+            <AccountProfileView
+              t={t}
+              onProfileUpdated={(updated) =>
+                setUser((prev: any) => (prev ? { ...prev, name: updated.name } : prev))
+              }
+              onNavigateToByok={() => handleSelectTab('account/byok')}
+              onLogout={handleLogout}
+            />
+          ) : !activeAgent ? (
             <div className="flex-1 flex items-center justify-center p-6">
-              <div className="bg-white border border-[#EAECEF] rounded-2xl p-8 text-center max-w-md space-y-3">
-                <h1 className="text-base font-semibold text-[#111827]">
+              <Card className="p-8 text-center max-w-md space-y-3 rounded-2xl">
+                <h1 className="text-base font-semibold text-foreground">
                   {t.createFirstAgentTitle}
                 </h1>
-                <p className="text-xs text-[#6B7280]">{t.createFirstAgentDesc}</p>
-                <button
-                  type="button"
-                  onClick={() => setShowNewAgentWizard(true)}
-                  className="px-4 py-2 rounded-lg bg-[#18181B] hover:bg-[#27272A] text-white text-xs font-medium inline-flex items-center gap-1.5 transition"
-                >
-                  <Plus className="w-3.5 h-3.5" aria-hidden="true" />
-                  <span>{t.newAgent}</span>
-                </button>
-              </div>
+                <p className="text-xs text-muted-foreground">{t.createFirstAgentDesc}</p>
+                <div className="pt-1">
+                  <Button type="button" onClick={() => setShowNewAgentWizard(true)}>
+                    <Plus className="size-3.5" aria-hidden="true" />
+                    <span>{t.newAgent}</span>
+                  </Button>
+                </div>
+              </Card>
             </div>
           ) : (
             <>
@@ -778,13 +899,13 @@ export function App() {
                   onOpenEmbed={() => setShowEmbed(true)}
                 />
               )}
-              {tab === 'behavior' && (
+              {(tab === 'workflow' || tab === 'behavior') && (
                 <BehaviorView
+                  section={tab === 'workflow' ? 'workflow' : 'prompt'}
                   agent={activeAgent}
                   lang={lang}
                   t={t}
                   onAgentUpdated={() => loadAgents(activeAgent.id)}
-                  onRequestDeleteAgent={() => setAgentPendingDelete(activeAgent)}
                 />
               )}
               {tab === 'widget' && (
@@ -795,23 +916,15 @@ export function App() {
                   onAgentUpdated={() => loadAgents(activeAgent.id)}
                 />
               )}
-              {tab === 'playground' && <PlaygroundView agent={activeAgent} />}
-              {tab === 'inbox' && <InboxView agent={activeAgent} />}
-              {tab === 'knowledge' && <KnowledgeView agent={activeAgent} />}
-              {tab === 'tools' && <ToolsMcpView agent={activeAgent} />}
-              {tab === 'schedule' && <ScheduleView agent={activeAgent} />}
-              {tab === 'products' && <ProductsView agent={activeAgent} />}
+              {tab === 'playground' && <PlaygroundView agent={activeAgent} lang={lang} t={t} />}
+              {tab === 'inbox' && <InboxView agent={activeAgent} lang={lang} t={t} />}
+              {tab === 'knowledge' && <KnowledgeView agent={activeAgent} lang={lang} t={t} />}
+              {tab === 'tools' && <ToolsMcpView agent={activeAgent} lang={lang} t={t} />}
+              {tab === 'schedule' && <ScheduleView agent={activeAgent} lang={lang} t={t} />}
+              {tab === 'products' && <ProductsView agent={activeAgent} lang={lang} t={t} />}
               {tab === 'tickets' && <TicketsView agent={activeAgent} lang={lang} t={t} />}
               {tab === 'leads' && <LeadsView agent={activeAgent} lang={lang} t={t} />}
-              {tab === 'webhooks' && <WebhooksView agent={activeAgent} />}
-              {tab === 'settings' && (
-                <SettingsByokView
-                  agent={activeAgent}
-                  t={t}
-                  onAgentUpdated={() => loadAgents(activeAgent.id)}
-                  onRequestDeleteAgent={() => setAgentPendingDelete(activeAgent)}
-                />
-              )}
+              {tab === 'webhooks' && <WebhooksView agent={activeAgent} lang={lang} t={t} />}
             </>
           )}
         </main>
@@ -831,204 +944,141 @@ export function App() {
         }}
       />
 
-      {/* Delete Agent Confirmation Native Dialog */}
-      <dialog
-        ref={deleteDialogRef}
-        onClose={() => setAgentPendingDelete(null)}
-        aria-labelledby="delete-agent-title"
-        {...({ closedby: 'closerequest' } as any)}
-        className="m-auto bg-white border border-[#EAECEF] rounded-2xl max-w-md w-[calc(100%-2rem)] p-0 shadow-2xl"
-      >
-        {agentPendingDelete && (
-          <div className="p-6 space-y-4">
-            <div className="flex items-start gap-3">
-              <span
-                className="w-9 h-9 rounded-xl bg-[#FEF2F2] text-[#DC2626] flex items-center justify-center shrink-0"
-                aria-hidden="true"
-              >
-                <Trash2 className="w-4 h-4" />
-              </span>
-              <div className="space-y-1">
-                <h2 id="delete-agent-title" className="text-sm font-semibold text-[#111827]">
-                  {t.deleteAgentTitle}
-                </h2>
-                <p className="text-xs text-[#6B7280] leading-relaxed">
-                  {t.deleteAgentWarning}{' '}
-                  <strong className="text-[#111827]">{agentPendingDelete.name}</strong>{' '}
-                  {t.deleteAgentWarningSuffix}
-                </p>
-              </div>
-            </div>
-            <div className="flex items-center justify-end gap-2 pt-2">
-              <button
-                type="button"
-                autoFocus
-                onClick={() => setAgentPendingDelete(null)}
-                className="px-3.5 py-2 rounded-lg border border-[#E5E7EB] bg-white hover:bg-[#F9FAFB] text-xs font-medium text-[#374151]"
-              >
-                {t.cancel}
-              </button>
-              <button
-                type="button"
-                disabled={deletingAgent}
-                onClick={confirmDeleteAgent}
-                className="px-3.5 py-2 rounded-lg bg-[#DC2626] hover:bg-[#B91C1C] disabled:opacity-50 text-white text-xs font-semibold"
-              >
-                {deletingAgent ? t.deleting : t.confirmDelete}
-              </button>
-            </div>
-          </div>
-        )}
-      </dialog>
-
-      {/* Embed Widget Native Modal Dialog */}
-      <dialog
-        ref={embedDialogRef}
-        onClose={() => setShowEmbed(false)}
-        onClick={(e) => {
-          if (e.target === embedDialogRef.current) setShowEmbed(false);
+      {/* Delete Agent Confirmation (shadcn AlertDialog) */}
+      <AlertDialog
+        open={Boolean(agentPendingDelete)}
+        onOpenChange={(open) => {
+          if (!open) setAgentPendingDelete(null);
         }}
-        aria-labelledby="embed-dialog-title"
-        {...({ closedby: 'any' } as any)}
-        className="m-auto bg-white border border-[#EAECEF] rounded-2xl max-w-lg w-[calc(100%-2rem)] p-0 shadow-xl"
       >
-        {activeAgent && (
-          <div className="p-6 space-y-4">
-            <div className="flex items-center justify-between gap-3">
-              <h2 id="embed-dialog-title" className="text-sm font-semibold text-[#111827]">
-                {t.embedWidget}
-              </h2>
-              <button
-                type="button"
-                onClick={() => setShowEmbed(false)}
-                aria-label={t.close}
-                className="w-7 h-7 rounded-lg text-[#6B7280] hover:bg-[#F3F4F6] hover:text-[#111827] flex items-center justify-center"
-              >
-                <X className="w-4 h-4" aria-hidden="true" />
-              </button>
-            </div>
-            <p className="text-xs text-[#6B7280]">{t.embedInstructions}</p>
-            <div className="relative">
-              <pre className="p-3 pr-24 rounded-xl bg-[#111827] text-[#E5E7EB] text-xs font-mono overflow-x-auto">
-                {embedSnippet}
-              </pre>
-              <button
-                type="button"
-                onClick={() => handleCopySnippet(embedSnippet)}
-                className="absolute top-2 right-2 px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white text-[11px] font-medium inline-flex items-center gap-1 transition"
-              >
-                {copiedSnippet ? (
-                  <Check className="w-3 h-3 text-[#4ADE80]" aria-hidden="true" />
-                ) : (
-                  <Copy className="w-3 h-3" aria-hidden="true" />
-                )}
-                <span>{copiedSnippet ? t.copied : t.copySnippet}</span>
-              </button>
-            </div>
-            <div className="text-xs text-[#6B7280]">
-              JS API: <code>window.Askmink.identify(signedJwt)</code> ·{' '}
-              <code>window.Askmink.setContext({'{ ... }'})</code> · <code>window.Askmink.open()</code>
-            </div>
-          </div>
-        )}
-      </dialog>
+        <AlertDialogContent>
+          {agentPendingDelete && (
+            <>
+              <div className="flex items-start gap-3">
+                <span
+                  className="size-9 rounded-xl bg-red-50 text-red-600 flex items-center justify-center shrink-0"
+                  aria-hidden="true"
+                >
+                  <Trash2 className="size-4" />
+                </span>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>{t.deleteAgentTitle}</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    {t.deleteAgentWarning}{' '}
+                    <strong className="text-foreground">{agentPendingDelete.name}</strong>{' '}
+                    {t.deleteAgentWarningSuffix}
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+              </div>
+              <AlertDialogFooter>
+                <AlertDialogCancel>{t.cancel}</AlertDialogCancel>
+                <AlertDialogAction
+                  disabled={deletingAgent}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    confirmDeleteAgent();
+                  }}
+                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                >
+                  {deletingAgent ? t.deleting : t.confirmDelete}
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </>
+          )}
+        </AlertDialogContent>
+      </AlertDialog>
 
-      {/* Quick Jump Command Dialog (Cmd/Ctrl+K) */}
-      <dialog
-        ref={quickJumpDialogRef}
-        onClose={() => setShowQuickJump(false)}
-        onClick={(e) => {
-          if (e.target === quickJumpDialogRef.current) setShowQuickJump(false);
-        }}
-        aria-label={t.quickJump}
-        {...({ closedby: 'any' } as any)}
-        className="m-auto mt-20 bg-white border border-[#EAECEF] rounded-2xl max-w-md w-[calc(100%-2rem)] p-0 shadow-xl overflow-hidden"
+      {/* Embed Widget Modal (shadcn Dialog) */}
+      <Dialog open={showEmbed} onOpenChange={setShowEmbed}>
+        <DialogContent className="max-w-lg">
+          {activeAgent && (
+            <>
+              <DialogHeader>
+                <DialogTitle>{t.embedWidget}</DialogTitle>
+                <DialogDescription>{t.embedInstructions}</DialogDescription>
+              </DialogHeader>
+              <div className="relative">
+                <pre className="p-3 pr-24 rounded-xl bg-zinc-900 text-zinc-100 text-xs font-mono overflow-x-auto">
+                  {embedSnippet}
+                </pre>
+                <Button
+                  type="button"
+                  size="xs"
+                  variant="ghost"
+                  onClick={() => handleCopySnippet(embedSnippet)}
+                  className="absolute top-2 right-2 bg-white/10 hover:bg-white/20 text-white hover:text-white"
+                >
+                  {copiedSnippet ? (
+                    <Check className="size-3 text-emerald-400" aria-hidden="true" />
+                  ) : (
+                    <Copy className="size-3" aria-hidden="true" />
+                  )}
+                  <span>{copiedSnippet ? t.copied : t.copySnippet}</span>
+                </Button>
+              </div>
+              <div className="text-xs text-muted-foreground">
+                JS API: <code>window.Askmink.identify(signedJwt)</code> ·{' '}
+                <code>window.Askmink.setContext({'{ ... }'})</code> ·{' '}
+                <code>window.Askmink.open()</code>
+              </div>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Quick Jump Command Dialog (shadcn CommandDialog, Cmd/Ctrl+K) */}
+      <CommandDialog
+        open={showQuickJump}
+        onOpenChange={setShowQuickJump}
+        title={t.quickJump}
+        description={t.quickJumpSections}
       >
-        <div className="flex items-center gap-2.5 px-4 py-3 border-b border-[#EAECEF]">
-          <Search className="w-4 h-4 text-[#9CA3AF] shrink-0" aria-hidden="true" />
-          <input
-            ref={quickInputRef}
-            type="text"
-            aria-label={t.quickJump}
-            value={quickQuery}
-            onChange={(e) => setQuickQuery(e.target.value)}
-            placeholder={t.quickJump}
-            className="flex-1 text-sm text-[#111827] placeholder:text-[#9CA3AF] bg-transparent outline-none"
-          />
-          <button
-            type="button"
-            onClick={() => setShowQuickJump(false)}
-            aria-label={t.close}
-            className="w-7 h-7 rounded-lg text-[#6B7280] hover:bg-[#F3F4F6] flex items-center justify-center"
-          >
-            <X className="w-4 h-4" aria-hidden="true" />
-          </button>
-        </div>
-
-        <div className="max-h-72 overflow-y-auto sidebar-scroll p-2 space-y-3">
-          {filteredNav.length > 0 && (
-            <div>
-              <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-[#9CA3AF]">
-                {t.quickJumpSections}
-              </div>
-              <ul className="space-y-0.5">
-                {filteredNav.map((item) => {
-                  const Icon = item.icon;
-                  return (
-                    <li key={item.id}>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          handleSelectTab(item.id);
-                          setShowQuickJump(false);
-                        }}
-                        className="w-full px-2.5 py-2 rounded-lg text-xs font-medium text-[#374151] hover:bg-[#F3F4F6] hover:text-[#111827] flex items-center gap-2.5 transition text-left"
-                      >
-                        <Icon className="w-4 h-4 text-[#6B7280]" aria-hidden="true" />
-                        <span>{item.label}</span>
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
-            </div>
+        <CommandInput placeholder={t.quickJump} />
+        <CommandList>
+          <CommandEmpty>{t.quickJumpEmpty}</CommandEmpty>
+          <CommandGroup heading={t.quickJumpSections}>
+            {allNavItems.map((item) => {
+              const Icon = item.icon;
+              return (
+                <CommandItem
+                  key={item.id}
+                  value={item.label}
+                  onSelect={() => {
+                    handleSelectTab(item.id);
+                    setShowQuickJump(false);
+                  }}
+                >
+                  <Icon className="size-4 text-muted-foreground" aria-hidden="true" />
+                  <span>{item.label}</span>
+                </CommandItem>
+              );
+            })}
+          </CommandGroup>
+          {agents.length > 0 && (
+            <CommandGroup heading={t.agentsSection}>
+              {agents.map((a) => (
+                <CommandItem
+                  key={a.id}
+                  value={String(a.name || a.id)}
+                  onSelect={() => {
+                    setActiveAgentId(a.id);
+                    setShowQuickJump(false);
+                  }}
+                  className="justify-between"
+                >
+                  <span className="inline-flex items-center gap-2 truncate">
+                    <Bot className="size-4 text-muted-foreground" aria-hidden="true" />
+                    <span className="truncate">{a.name}</span>
+                  </span>
+                  {activeAgent?.id === a.id && (
+                    <Check className="size-3.5 text-foreground" aria-hidden="true" />
+                  )}
+                </CommandItem>
+              ))}
+            </CommandGroup>
           )}
-
-          {filteredAgents.length > 0 && (
-            <div>
-              <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-[#9CA3AF]">
-                {t.agentsSection}
-              </div>
-              <ul className="space-y-0.5">
-                {filteredAgents.map((a) => (
-                  <li key={a.id}>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setActiveAgentId(a.id);
-                        setShowQuickJump(false);
-                      }}
-                      className="w-full px-2.5 py-2 rounded-lg text-xs font-medium text-[#374151] hover:bg-[#F3F4F6] hover:text-[#111827] flex items-center justify-between gap-2 transition text-left"
-                    >
-                      <span className="inline-flex items-center gap-2 truncate">
-                        <Bot className="w-4 h-4 text-[#6B7280]" aria-hidden="true" />
-                        <span className="truncate">{a.name}</span>
-                      </span>
-                      {activeAgent?.id === a.id && (
-                        <Check className="w-3.5 h-3.5 text-[#111827]" aria-hidden="true" />
-                      )}
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          {filteredNav.length === 0 && filteredAgents.length === 0 && (
-            <div className="py-8 text-center text-xs text-[#6B7280]">{t.quickJumpEmpty}</div>
-          )}
-        </div>
-      </dialog>
+        </CommandList>
+      </CommandDialog>
     </div>
   );
 }

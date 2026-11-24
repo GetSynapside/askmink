@@ -16,6 +16,7 @@ import {
   tickets,
   tools as toolsTable,
   usageEvents,
+  workspaces,
 } from '@askmink/db';
 import type {
   AgentMode,
@@ -105,11 +106,16 @@ export class AgentOrchestrator {
   ) {}
 
   private async resolveChatCredentials(agent: typeof agents.$inferSelect): Promise<ResolvedProviderCredentials> {
-    if (agent.chatProviderKeyId) {
+    const workspace = await this.db.query.workspaces.findFirst({
+      where: eq(workspaces.id, agent.workspaceId),
+    });
+
+    if (workspace?.chatProviderKeyId) {
       const keyRow = await this.db.query.providerKeys.findFirst({
         where: and(
-          eq(providerKeys.id, agent.chatProviderKeyId),
-          eq(providerKeys.workspaceId, agent.workspaceId)
+          eq(providerKeys.id, workspace.chatProviderKeyId),
+          eq(providerKeys.workspaceId, agent.workspaceId),
+          eq(providerKeys.purpose, 'chat')
         ),
       });
       if (keyRow) {
@@ -117,17 +123,23 @@ export class AgentOrchestrator {
           provider: keyRow.provider as AIProvider,
           apiKey: this.crypto.decrypt(keyRow.encryptedApiKey),
           baseUrl: keyRow.baseUrl,
-          model: agent.chatModel || keyRow.defaultModel || this.config.defaultChatModel,
+          model:
+            workspace.chatModel ||
+            keyRow.defaultModel ||
+            agent.chatModel ||
+            this.config.defaultChatModel,
         };
       }
     }
+
+    const activeModel = workspace?.chatModel || agent.chatModel || this.config.defaultChatModel;
 
     if (this.config.aiGatewayApiKey) {
       return {
         provider: 'vercel-ai-gateway',
         apiKey: this.config.aiGatewayApiKey,
         baseUrl: this.config.aiGatewayBaseUrl,
-        model: agent.chatModel || this.config.defaultChatModel,
+        model: activeModel,
       };
     }
 
@@ -135,11 +147,11 @@ export class AgentOrchestrator {
       return {
         provider: 'mock',
         apiKey: 'mock',
-        model: agent.chatModel || this.config.defaultChatModel,
+        model: activeModel,
       };
     }
 
-    throw new Error('No chat AI provider key configured. Add a BYOK key or run configure-ai-gateway.sh.');
+    throw new Error('No global chat AI provider key configured. Add a Chat BYOK key in Account Settings.');
   }
 
   private async resolveEmbeddingCredentialsOptional(
