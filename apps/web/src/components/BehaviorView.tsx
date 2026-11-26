@@ -6,6 +6,7 @@ import {
   Plus,
   Save,
   Wrench,
+  X,
 } from 'lucide-react';
 import type { SupportedLanguage } from '@askmink/shared';
 import { apiRequest } from '@/lib/api';
@@ -70,7 +71,6 @@ export function BehaviorView({
   onAgentUpdated,
 }: BehaviorViewProps) {
   const [name, setName] = useState<string>(agent.name || '');
-  const [description, setDescription] = useState<string>(agent.description || '');
   const [promptRules, setPromptRules] = useState<PromptRulesConfig>(() =>
     parsePromptRules(agent.systemPrompt || '')
   );
@@ -89,13 +89,26 @@ export function BehaviorView({
   // Sync when switching active agent
   useEffect(() => {
     setName(agent.name || '');
-    setDescription(agent.description || '');
     setPromptRules(parsePromptRules(agent.systemPrompt || ''));
     const loaded = loadAgentWorkflow(agent.id, agent.systemPrompt || '');
     setWorkflow(loaded);
     setSelectedNodeId(loaded.nodes[0]?.id || '');
     setNotice(null);
   }, [agent.id]);
+
+  // Clear notice when switching between Workflow and Prompt & Rules sections
+  useEffect(() => {
+    setNotice(null);
+  }, [section]);
+
+  // Auto-dismiss success notices after 4s
+  useEffect(() => {
+    if (!notice || notice.type !== 'ok') return;
+    const timer = window.setTimeout(() => {
+      setNotice(null);
+    }, 4000);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
 
   const compiledBaseWithRules = useMemo(
     () => compilePromptRules(promptRules),
@@ -299,7 +312,9 @@ export function BehaviorView({
     if (compiledPrompt.length > 8000) {
       setNotice({
         type: 'err',
-        text: `Prompt exceeds 8000 characters (${compiledPrompt.length}). Shorten step explanations or base instructions.`,
+        text: t.behaviorPromptTooLong
+          ? `${t.behaviorPromptTooLong} (${compiledPrompt.length}/8000)`
+          : `Prompt exceeds 8000 characters (${compiledPrompt.length}). Shorten step explanations or base instructions.`,
       });
       return;
     }
@@ -310,13 +325,17 @@ export function BehaviorView({
         method: 'PATCH',
         body: {
           name: name.trim() || agent.name,
-          description: description.trim(),
           systemPrompt: compiledPrompt,
         },
       });
       saveAgentWorkflow(agent.id, workflow);
-      await onAgentUpdated();
+      try {
+        localStorage.setItem(`askmink_check_behavior_${agent.id}`, '1');
+      } catch {
+        // Ignore storage write errors
+      }
       setNotice({ type: 'ok', text: t.behaviorSaved || 'Saved.' });
+      await Promise.resolve(onAgentUpdated()).catch(() => undefined);
     } catch (err) {
       setNotice({ type: 'err', text: (err as Error).message });
     } finally {
@@ -349,8 +368,19 @@ export function BehaviorView({
 
       {notice && (
         <div className="px-5 pt-3 shrink-0">
-          <Alert variant={notice.type === 'ok' ? 'success' : 'destructive'}>
+          <Alert
+            variant={notice.type === 'ok' ? 'success' : 'destructive'}
+            className="flex items-center justify-between gap-3"
+          >
             <AlertDescription className="font-medium">{notice.text}</AlertDescription>
+            <button
+              type="button"
+              onClick={() => setNotice(null)}
+              aria-label={t.closeNotice || 'Dismiss notice'}
+              className="shrink-0 rounded-md p-1 opacity-70 hover:opacity-100 hover:bg-black/5 transition cursor-pointer"
+            >
+              <X className="size-3.5" aria-hidden="true" />
+            </button>
           </Alert>
         </div>
       )}
@@ -674,25 +704,14 @@ export function BehaviorView({
         <div className="flex-1 overflow-y-auto sidebar-scroll p-5 lg:p-6">
           <div className="max-w-5xl mx-auto space-y-6">
             <Card className="p-5 space-y-4">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-                <div className="space-y-1.5">
-                  <Label htmlFor="behavior-agent-name">{t.agentNameLabel}</Label>
-                  <Input
-                    id="behavior-agent-name"
-                    type="text"
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="behavior-agent-desc">{t.agentDescLabel}</Label>
-                  <Input
-                    id="behavior-agent-desc"
-                    type="text"
-                    value={description}
-                    onChange={(e) => setDescription(e.target.value)}
-                  />
-                </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="behavior-agent-name">{t.agentNameLabel}</Label>
+                <Input
+                  id="behavior-agent-name"
+                  type="text"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                />
               </div>
 
               <div className="space-y-1.5">
@@ -790,7 +809,7 @@ export function BehaviorView({
                       {t.responseLengthShort || 'Short & concise'}
                     </SelectItem>
                     <SelectItem value="balanced">
-                      {t.responseLengthBalanced || 'Balanced (default)'}
+                      {t.responseLengthBalanced || 'Balanced'}
                     </SelectItem>
                     <SelectItem value="detailed">
                       {t.responseLengthDetailed || 'Detailed'}

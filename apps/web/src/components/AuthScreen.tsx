@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Globe, Sparkles } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Eye, EyeOff, Globe, Sparkles } from 'lucide-react';
 import type { SupportedLanguage } from '@askmink/shared';
 import { apiRequest } from '@/lib/api';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -16,14 +16,36 @@ interface AuthScreenProps {
   onAuthenticated: (user: any) => void;
 }
 
+function resolveAuthModeFromLocation(): 'login' | 'signup' {
+  if (typeof window === 'undefined') return 'login';
+  const seg = window.location.pathname.replace(/^\/+|\/+$/g, '').toLowerCase();
+  return seg === 'signup' ? 'signup' : 'login';
+}
+
 export function AuthScreen({ lang, onChangeLang, t, onAuthenticated }: AuthScreenProps) {
-  const [mode, setMode] = useState<'login' | 'signup'>('signup');
+  const [mode, setMode] = useState<'login' | 'signup'>(resolveAuthModeFromLocation);
   const [name, setName] = useState('');
   const [workspaceName, setWorkspaceName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const expectedPath = `/${mode}`;
+    if (window.location.pathname !== expectedPath) {
+      window.history.replaceState({ authMode: mode }, '', expectedPath);
+    }
+    function onPopState() {
+      setMode(resolveAuthModeFromLocation());
+      setShowPassword(false);
+      setError('');
+    }
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -58,16 +80,16 @@ export function AuthScreen({ lang, onChangeLang, t, onAuthenticated }: AuthScree
               </div>
               <div>
                 <h1 className="text-lg font-semibold text-foreground tracking-tight">Askmink</h1>
-                <p className="text-xs text-muted-foreground">{t.authSubtitle}</p>
+                <p className="text-xs text-foreground/75">{t.authSubtitle}</p>
               </div>
             </div>
 
             <div
-              className="inline-flex items-center gap-0.5 p-0.5 rounded-lg bg-background/80 border border-border shrink-0"
+              className="inline-flex items-center gap-1 p-1 rounded-xl bg-white/95 border border-border/80 shadow-xs shrink-0"
               role="group"
               aria-label={t.language}
             >
-              <Globe className="size-3 text-muted-foreground ml-1 mr-0.5" aria-hidden="true" />
+              <Globe className="size-3.5 text-slate-600 ml-1.5 mr-0.5" aria-hidden="true" />
               {(['en', 'pt', 'es'] as SupportedLanguage[]).map((code) => (
                 <Button
                   key={code}
@@ -76,7 +98,11 @@ export function AuthScreen({ lang, onChangeLang, t, onAuthenticated }: AuthScree
                   variant={lang === code ? 'default' : 'ghost'}
                   onClick={() => onChangeLang(code)}
                   aria-pressed={lang === code}
-                  className="h-5 px-1.5 text-[10px] font-semibold uppercase"
+                  className={
+                    lang === code
+                      ? 'h-6 px-2.5 text-[11px] font-semibold uppercase rounded-lg bg-primary text-primary-foreground shadow-xs hover:bg-primary/90'
+                      : 'h-6 px-2.5 text-[11px] font-semibold uppercase rounded-lg text-slate-700 hover:bg-slate-100 hover:text-slate-900'
+                  }
                 >
                   {code}
                 </Button>
@@ -87,7 +113,18 @@ export function AuthScreen({ lang, onChangeLang, t, onAuthenticated }: AuthScree
 
         <CardContent className="p-6">
           <form onSubmit={handleSubmit} className="space-y-4">
-            <Tabs value={mode} onValueChange={(v) => setMode(v as 'login' | 'signup')}>
+            <Tabs
+              value={mode}
+              onValueChange={(v) => {
+                const next = v === 'signup' ? 'signup' : 'login';
+                setMode(next);
+                setShowPassword(false);
+                setError('');
+                if (typeof window !== 'undefined') {
+                  window.history.replaceState({ authMode: next }, '', `/${next}`);
+                }
+              }}
+            >
               <TabsList className="w-full">
                 <TabsTrigger value="login">{t.signIn}</TabsTrigger>
                 <TabsTrigger value="signup">{t.signUp}</TabsTrigger>
@@ -100,6 +137,7 @@ export function AuthScreen({ lang, onChangeLang, t, onAuthenticated }: AuthScree
                   <Label htmlFor="auth-name">{t.authFullName}</Label>
                   <Input
                     id="auth-name"
+                    name="name"
                     autoComplete="name"
                     className="h-9 text-sm"
                     value={name}
@@ -112,6 +150,7 @@ export function AuthScreen({ lang, onChangeLang, t, onAuthenticated }: AuthScree
                   <Label htmlFor="auth-workspace">{t.authWorkspaceName}</Label>
                   <Input
                     id="auth-workspace"
+                    name="workspaceName"
                     autoComplete="organization"
                     className="h-9 text-sm"
                     placeholder={t.authWorkspacePh}
@@ -126,8 +165,11 @@ export function AuthScreen({ lang, onChangeLang, t, onAuthenticated }: AuthScree
               <Label htmlFor="auth-email">{t.authEmail}</Label>
               <Input
                 id="auth-email"
+                name="email"
                 type="email"
                 autoComplete="email"
+                autoCapitalize="none"
+                spellCheck={false}
                 className="h-9 text-sm"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
@@ -142,16 +184,35 @@ export function AuthScreen({ lang, onChangeLang, t, onAuthenticated }: AuthScree
                   <span className="text-muted-foreground font-normal">{t.authMinChars}</span>
                 )}
               </Label>
-              <Input
-                id="auth-password"
-                type="password"
-                autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
-                className="h-9 text-sm"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-                minLength={mode === 'signup' ? 8 : 1}
-              />
+              <div className="relative">
+                <Input
+                  id="auth-password"
+                  name="password"
+                  type={showPassword ? 'text' : 'password'}
+                  autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
+                  className="h-9 text-sm pr-10"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                  minLength={mode === 'signup' ? 8 : 1}
+                />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={() => setShowPassword((prev) => !prev)}
+                  aria-label={showPassword ? t.hidePassword || 'Hide password' : t.showPassword || 'Show password'}
+                  aria-pressed={showPassword}
+                  aria-controls="auth-password"
+                  className="absolute right-1 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                >
+                  {showPassword ? (
+                    <EyeOff className="size-4" aria-hidden="true" />
+                  ) : (
+                    <Eye className="size-4" aria-hidden="true" />
+                  )}
+                </Button>
+              </div>
             </div>
 
             {error && (

@@ -1,4 +1,4 @@
-import { render } from 'preact';
+import { Fragment, render, type ComponentChildren } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { WIDGET_CSS } from './styles';
 
@@ -28,11 +28,35 @@ interface WidgetConfig {
   name: string;
   defaultLanguage: Lang;
   welcomeMessage: string;
+  starterPrompts?: string[];
   primaryColor: string;
   showBranding: boolean;
 }
 
-const I18N: Record<Lang, Record<string, string>> = {
+interface I18NStrings {
+  online: string;
+  placeholder: string;
+  send: string;
+  book: string;
+  checkout: string;
+  downloadIcs: string;
+  confirmAction: string;
+  cancel: string;
+  namePh: string;
+  emailPh: string;
+  powered: string;
+  welcome: string;
+  close: string;
+  openLauncher: string;
+  closeLauncher: string;
+  chatDialogLabel: string;
+  thinking: string;
+  errorOrigin: string;
+  errorRateLimit: string;
+  errorGeneric: string;
+}
+
+const I18N: Record<Lang, I18NStrings> = {
   en: {
     online: 'Online',
     placeholder: 'Ask a question...',
@@ -45,6 +69,15 @@ const I18N: Record<Lang, Record<string, string>> = {
     namePh: 'Your name',
     emailPh: 'Your email',
     powered: 'Powered by Askmink',
+    welcome: 'Hi! How can I help you today?',
+    close: 'Close',
+    openLauncher: 'Open Askmink',
+    closeLauncher: 'Close Askmink',
+    chatDialogLabel: 'Askmink Chat',
+    thinking: 'Thinking...',
+    errorOrigin: 'This domain is not authorized to use this assistant.',
+    errorRateLimit: 'Too many messages right now. Please wait a moment and try again.',
+    errorGeneric: 'Sorry, I could not respond right now. Please try again.',
   },
   pt: {
     online: 'Online',
@@ -57,7 +90,16 @@ const I18N: Record<Lang, Record<string, string>> = {
     cancel: 'Cancelar',
     namePh: 'Seu nome',
     emailPh: 'Seu e-mail',
-    powered: 'Powered by Askmink',
+    powered: 'Desenvolvido com Askmink',
+    welcome: 'Olá! Como posso ajudar você hoje?',
+    close: 'Fechar',
+    openLauncher: 'Abrir Askmink',
+    closeLauncher: 'Fechar Askmink',
+    chatDialogLabel: 'Chat Askmink',
+    thinking: 'Respondendo...',
+    errorOrigin: 'Este domínio não está autorizado a usar este assistente.',
+    errorRateLimit: 'Muitas mensagens em seguida. Aguarde um instante e tente novamente.',
+    errorGeneric: 'Desculpe, não foi possível responder agora. Tente novamente.',
   },
   es: {
     online: 'En línea',
@@ -70,21 +112,288 @@ const I18N: Record<Lang, Record<string, string>> = {
     cancel: 'Cancelar',
     namePh: 'Tu nombre',
     emailPh: 'Tu correo',
-    powered: 'Powered by Askmink',
+    powered: 'Impulsado por Askmink',
+    welcome: '¡Hola! ¿Cómo puedo ayudarte hoy?',
+    close: 'Cerrar',
+    openLauncher: 'Abrir Askmink',
+    closeLauncher: 'Cerrar Askmink',
+    chatDialogLabel: 'Chat de Askmink',
+    thinking: 'Pensando...',
+    errorOrigin: 'Este dominio no está autorizado para usar este asistente.',
+    errorRateLimit: 'Demasiados mensajes seguidos. Espera un momento e inténtalo de nuevo.',
+    errorGeneric: 'Lo siento, no pude responder en este momento. Inténtalo de nuevo.',
   },
 };
 
-function detectLanguage(fallback: Lang): Lang {
-  const raw = (document.documentElement.lang || navigator.language || fallback).toLowerCase();
-  if (raw.startsWith('pt')) return 'pt';
-  if (raw.startsWith('es')) return 'es';
-  if (raw.startsWith('en')) return 'en';
-  return fallback;
+function normalizeLang(raw?: string | null): Lang | null {
+  const v = (raw || '').trim().toLowerCase();
+  if (!v) return null;
+  if (v === 'pt' || v.startsWith('pt-') || v.startsWith('pt_')) return 'pt';
+  if (v === 'es' || v.startsWith('es-') || v.startsWith('es_')) return 'es';
+  if (v === 'en' || v.startsWith('en-') || v.startsWith('en_')) return 'en';
+  return null;
+}
+
+function resolveLanguage(dataLang?: Lang | null, cfgLang?: string | null): Lang {
+  return (
+    dataLang ||
+    normalizeLang(cfgLang) ||
+    normalizeLang(typeof document !== 'undefined' ? document.documentElement.lang : '') ||
+    normalizeLang(typeof navigator !== 'undefined' ? navigator.language : '') ||
+    'en'
+  );
+}
+
+function isSafeHttpUrl(rawUrl: unknown): rawUrl is string {
+  if (typeof rawUrl !== 'string') return false;
+  const trimmed = rawUrl.trim();
+  if (!trimmed || /[\u0000-\u001F\u007F]/.test(trimmed)) return false;
+  if (!/^https?:\/\//i.test(trimmed)) return false;
+  try {
+    const parsed = new URL(trimmed);
+    return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && parsed.hostname.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+class WidgetFriendlyError extends Error {}
+
+function mapStatusError(status: number, t: I18NStrings): string {
+  if (status === 403) return t.errorOrigin;
+  if (status === 429) return t.errorRateLimit;
+  return t.errorGeneric;
+}
+
+async function parseJsonSafe(res: Response): Promise<any> {
+  try {
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+function dedupeCards(cards?: UICard[]): UICard[] {
+  if (!cards || cards.length === 0) return [];
+  const seenProductIds = new Set<string>();
+  return cards.filter((card) => {
+    if (card.type !== 'product_card') return true;
+    const pid = typeof card.productId === 'string' ? card.productId.trim() : '';
+    if (!pid) return true;
+    if (seenProductIds.has(pid)) return false;
+    seenProductIds.add(pid);
+    return true;
+  });
+}
+
+function parseInline(text: string, depth = 0): ComponentChildren[] {
+  if (!text || depth > 6) return [text];
+  const out: ComponentChildren[] = [];
+  let buf = '';
+  let i = 0;
+
+  const flush = () => {
+    if (buf) {
+      out.push(buf);
+      buf = '';
+    }
+  };
+
+  while (i < text.length) {
+    const ch = text[i];
+
+    // 1. Inline code: `...`
+    if (ch === '`') {
+      const end = text.indexOf('`', i + 1);
+      if (end > i + 1) {
+        flush();
+        out.push(<code key={`c-${i}`}>{text.slice(i + 1, end)}</code>);
+        i = end + 1;
+        continue;
+      }
+    }
+
+    // 2. Links: [label](url) with balanced parentheses in url
+    if (ch === '[') {
+      const closeBracket = text.indexOf(']', i + 1);
+      if (closeBracket > i + 1 && text[closeBracket + 1] === '(') {
+        let pDepth = 1;
+        let j = closeBracket + 2;
+        while (j < text.length && pDepth > 0) {
+          const uc = text[j];
+          if (uc === '\n') break;
+          if (uc === '(') pDepth++;
+          else if (uc === ')') pDepth--;
+          j++;
+        }
+        if (pDepth === 0) {
+          const label = text.slice(i + 1, closeBracket);
+          const rawUrl = text.slice(closeBracket + 2, j - 1);
+          flush();
+          if (isSafeHttpUrl(rawUrl)) {
+            out.push(
+              <a
+                key={`a-${i}`}
+                href={rawUrl.trim()}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                {parseInline(label, depth + 1)}
+              </a>
+            );
+          } else {
+            out.push(
+              <Fragment key={`bl-${i}`}>{parseInline(label, depth + 1)}</Fragment>
+            );
+          }
+          i = j;
+          continue;
+        }
+      }
+    }
+
+    // 3. Bold + Italic: ***...***
+    if (ch === '*' && text[i + 1] === '*' && text[i + 2] === '*') {
+      const nextCh = text[i + 3];
+      if (nextCh && !/\s/.test(nextCh)) {
+        let end = text.indexOf('***', i + 3);
+        while (end !== -1 && /\s/.test(text[end - 1] || '')) {
+          end = text.indexOf('***', end + 1);
+        }
+        if (end > i + 3) {
+          flush();
+          out.push(
+            <strong key={`bi-${i}`}>
+              <em>{parseInline(text.slice(i + 3, end), depth + 1)}</em>
+            </strong>
+          );
+          i = end + 3;
+          continue;
+        }
+      }
+    }
+
+    // 4. Bold: **...**
+    if (ch === '*' && text[i + 1] === '*') {
+      const nextCh = text[i + 2];
+      if (nextCh && !/\s/.test(nextCh)) {
+        let end = text.indexOf('**', i + 2);
+        while (end !== -1 && /\s/.test(text[end - 1] || '')) {
+          end = text.indexOf('**', end + 1);
+        }
+        if (end > i + 2) {
+          if (
+            text[end + 2] === '*' &&
+            (end + 3 >= text.length || /\s|[.,!?;:)\]]/.test(text[end + 3] || ''))
+          ) {
+            end++;
+          }
+          flush();
+          out.push(
+            <strong key={`b-${i}`}>{parseInline(text.slice(i + 2, end), depth + 1)}</strong>
+          );
+          i = end + 2;
+          continue;
+        }
+      }
+    }
+
+    // 5. Italic: *...*
+    if (ch === '*' && text[i - 1] !== '*' && text[i + 1] !== '*') {
+      const nextCh = text[i + 1];
+      if (nextCh && !/\s/.test(nextCh)) {
+        let end = i + 2;
+        let found = -1;
+        while (end < text.length) {
+          if (
+            text[end] === '*' &&
+            text[end - 1] !== '*' &&
+            text[end + 1] !== '*' &&
+            !/\s/.test(text[end - 1] || '')
+          ) {
+            found = end;
+            break;
+          }
+          end++;
+        }
+        if (found > i + 1) {
+          flush();
+          out.push(<em key={`e-${i}`}>{parseInline(text.slice(i + 1, found), depth + 1)}</em>);
+          i = found + 1;
+          continue;
+        }
+      }
+    }
+
+    buf += ch ?? '';
+    i++;
+  }
+
+  flush();
+  return out;
+}
+
+function SafeMarkdown({ text }: { text: string }) {
+  const lines = text.replace(/\r\n?/g, '\n').split('\n');
+  const blocks: ComponentChildren[] = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i] ?? '';
+    if (!line.trim()) {
+      i++;
+      continue;
+    }
+
+    if (/^\s*[-*]\s+/.test(line)) {
+      const items: ComponentChildren[] = [];
+      while (i < lines.length && /^\s*[-*]\s+/.test(lines[i] ?? '')) {
+        const content = (lines[i] ?? '').replace(/^\s*[-*]\s+/, '');
+        items.push(<li key={items.length}>{parseInline(content)}</li>);
+        i++;
+      }
+      blocks.push(<ul key={blocks.length}>{items}</ul>);
+      continue;
+    }
+
+    if (/^\s*\d+\.\s+/.test(line)) {
+      const items: ComponentChildren[] = [];
+      while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i] ?? '')) {
+        const content = (lines[i] ?? '').replace(/^\s*\d+\.\s+/, '');
+        items.push(<li key={items.length}>{parseInline(content)}</li>);
+        i++;
+      }
+      blocks.push(<ol key={blocks.length}>{items}</ol>);
+      continue;
+    }
+
+    const paraLines: string[] = [];
+    while (i < lines.length) {
+      const cur = lines[i] ?? '';
+      if (!cur.trim() || /^\s*[-*]\s+/.test(cur) || /^\s*\d+\.\s+/.test(cur)) break;
+      paraLines.push(cur);
+      i++;
+    }
+    blocks.push(
+      <p key={blocks.length}>
+        {paraLines.map((pl, idx) => (
+          <Fragment key={`pl-${idx}`}>
+            {idx > 0 && <br />}
+            {parseInline(pl)}
+          </Fragment>
+        ))}
+      </p>
+    );
+  }
+
+  return <div class="am-md">{blocks}</div>;
 }
 
 interface SharedRuntime {
   apiBase: string;
   agentId: string;
+  lang: Lang | null;
+  starters: string[];
   position: 'bottom-right' | 'bottom-left';
   theme: 'light' | 'dark';
   radius: 'rounded' | 'classic' | 'sharp';
@@ -105,7 +414,7 @@ function BookingSlotsCard({
   apiBase: string;
   agentId: string;
   conversationId?: string;
-  t: Record<string, string>;
+  t: I18NStrings;
 }) {
   const slots = (card.slots || []) as Array<{ startsAt: string; endsAt: string; label: string }>;
   const [selected, setSelected] = useState(slots[0] || null);
@@ -116,18 +425,28 @@ function BookingSlotsCard({
   const [busy, setBusy] = useState(false);
 
   if (confirmed) {
+    const rawIcs = typeof confirmed.icsDownloadUrl === 'string' ? confirmed.icsDownloadUrl.trim() : '';
+    let icsHref = '';
+    if (/^https?:\/\//i.test(rawIcs)) {
+      icsHref = rawIcs;
+    } else if (rawIcs.startsWith('/') && !rawIcs.startsWith('//')) {
+      const base = apiBase || (typeof window !== 'undefined' ? window.location.origin : '');
+      icsHref = base ? `${base.replace(/\/$/, '')}${rawIcs}` : '';
+    }
     return (
       <div class="am-card">
         <div class="am-card-title">{t.book} ✓</div>
         <div class="am-card-desc">{selected?.label}</div>
-        <a
-          class="am-btn"
-          href={`${apiBase}${confirmed.icsDownloadUrl}`}
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          {t.downloadIcs}
-        </a>
+        {isSafeHttpUrl(icsHref) && (
+          <a
+            class="am-btn"
+            href={icsHref.trim()}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            {t.downloadIcs}
+          </a>
+        )}
       </div>
     );
   }
@@ -150,11 +469,16 @@ function BookingSlotsCard({
           timezone: card.timezone || 'UTC',
         }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Booking failed');
+      const data = await parseJsonSafe(res);
+      if (!res.ok) {
+        throw new WidgetFriendlyError(mapStatusError(res.status, t));
+      }
+      if (!data?.booking?.id || !data?.icsDownloadUrl) {
+        throw new WidgetFriendlyError(t.errorGeneric);
+      }
       setConfirmed({ bookingId: data.booking.id, icsDownloadUrl: data.icsDownloadUrl });
     } catch (err) {
-      setError((err as Error).message);
+      setError(err instanceof WidgetFriendlyError ? err.message : t.errorGeneric);
     } finally {
       setBusy(false);
     }
@@ -201,7 +525,7 @@ function BookingSlotsCard({
 function AskminkWidgetApp({ runtime }: { runtime: SharedRuntime }) {
   const [open, setOpen] = useState(false);
   const [config, setConfig] = useState<WidgetConfig | null>(null);
-  const [lang, setLang] = useState<Lang>('en');
+  const [lang, setLang] = useState<Lang>(() => resolveLanguage(runtime.lang));
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -209,31 +533,71 @@ function AskminkWidgetApp({ runtime }: { runtime: SharedRuntime }) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    let cancelled = false;
     runtime.setOpenExternal = setOpen;
-    fetch(`${runtime.apiBase}/api/widget/${runtime.agentId}/config`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((cfg: WidgetConfig | null) => {
-        if (!cfg) return;
+    const initialLang = resolveLanguage(runtime.lang);
+
+    (async () => {
+      try {
+        const res = await fetch(`${runtime.apiBase}/api/widget/${runtime.agentId}/config`);
+        if (cancelled) return;
+        const cfg = (await parseJsonSafe(res)) as WidgetConfig | null;
+        if (cancelled) return;
+        if (!res.ok || !cfg) {
+          const errText = mapStatusError(res.status, I18N[initialLang]);
+          setMessages((prev) =>
+            prev.length === 0 ? [{ id: 'config-error', role: 'assistant', text: errText }] : prev
+          );
+          return;
+        }
+        const resolved = resolveLanguage(runtime.lang, cfg.defaultLanguage);
         setConfig(cfg);
-        setLang(detectLanguage(cfg.defaultLanguage || 'en'));
-        setMessages([
-          {
-            id: 'welcome',
-            role: 'assistant',
-            text: cfg.welcomeMessage || 'Hi! How can I help you?',
-          },
-        ]);
-      })
-      .catch(() => undefined);
+        setLang(resolved);
+        const welcomeText = cfg.welcomeMessage?.trim() || I18N[resolved].welcome;
+        setMessages((prev) =>
+          prev.length === 0
+            ? [{ id: 'welcome', role: 'assistant', text: welcomeText }]
+            : prev.map((m) => (m.id === 'welcome' ? { ...m, text: welcomeText } : m))
+        );
+      } catch {
+        if (cancelled) return;
+        setMessages((prev) =>
+          prev.length === 0
+            ? [{ id: 'config-error', role: 'assistant', text: I18N[initialLang].errorGeneric }]
+            : prev
+        );
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      runtime.setOpenExternal = undefined;
+    };
   }, []);
 
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [messages, open]);
+  }, [messages, open, loading]);
 
   const t = I18N[lang] || I18N.en;
+
+  const starters = Array.from(
+    new Set(
+      runtime.starters.length > 0
+        ? runtime.starters
+        : Array.isArray(config?.starterPrompts)
+          ? config.starterPrompts.map((s) => String(s).trim()).filter(Boolean)
+          : []
+    )
+  ).slice(0, 6);
+  const hasUserMessage = messages.some((m) => m.role === 'user');
+  const showStarters =
+    !hasUserMessage &&
+    !loading &&
+    starters.length > 0 &&
+    messages.some((m) => m.id === 'welcome');
 
   async function sendMessage(text: string, confirmedToolCallId?: string) {
     const trimmed = text.trim();
@@ -257,8 +621,13 @@ function AskminkWidgetApp({ runtime }: { runtime: SharedRuntime }) {
           confirmedToolCallId,
         }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Request failed');
+      const data = await parseJsonSafe(res);
+      if (!res.ok) {
+        throw new WidgetFriendlyError(mapStatusError(res.status, t));
+      }
+      if (!data) {
+        throw new WidgetFriendlyError(t.errorGeneric);
+      }
       if (data.conversationId) setConversationId(data.conversationId);
       setMessages((prev) => [
         ...prev,
@@ -271,9 +640,10 @@ function AskminkWidgetApp({ runtime }: { runtime: SharedRuntime }) {
         },
       ]);
     } catch (err) {
+      const friendlyText = err instanceof WidgetFriendlyError ? err.message : t.errorGeneric;
       setMessages((prev) => [
         ...prev,
-        { id: String(Date.now() + 2), role: 'assistant', text: (err as Error).message },
+        { id: String(Date.now() + 2), role: 'assistant', text: friendlyText },
       ]);
     } finally {
       setLoading(false);
@@ -289,7 +659,7 @@ function AskminkWidgetApp({ runtime }: { runtime: SharedRuntime }) {
       style={{ '--am-primary': config?.primaryColor || '#2563EB' } as any}
     >
       {open && (
-        <div class="am-panel" role="dialog" aria-label={config?.name || 'Askmink Chat'}>
+        <div class="am-panel" role="dialog" aria-label={config?.name || t.chatDialogLabel}>
           <div class="am-header">
             <div class="am-brand">
               <div class="am-avatar">{(config?.name || 'A').slice(0, 1).toUpperCase()}</div>
@@ -304,7 +674,7 @@ function AskminkWidgetApp({ runtime }: { runtime: SharedRuntime }) {
             <button
               type="button"
               class="am-close"
-              aria-label="Close"
+              aria-label={t.close}
               onClick={() => setOpen(false)}
             >
               ×
@@ -314,23 +684,27 @@ function AskminkWidgetApp({ runtime }: { runtime: SharedRuntime }) {
           <div class="am-messages" ref={scrollRef}>
             {messages.map((m) => (
               <div key={m.id} class={`am-msg ${m.role === 'user' ? 'am-msg-user' : 'am-msg-bot'}`}>
-                <div>{m.text}</div>
+                {m.role === 'assistant' ? (
+                  <SafeMarkdown text={m.text} />
+                ) : (
+                  <div class="am-user-text">{m.text}</div>
+                )}
 
                 {m.citations && m.citations.length > 0 && (
                   <div class="am-citations">
                     {m.citations.map((c, idx) =>
-                      c.url ? (
+                      isSafeHttpUrl(c.url) ? (
                         <a
-                          key={idx}
+                          key={c.sourceId || idx}
                           class="am-cite"
-                          href={c.url}
+                          href={c.url.trim()}
                           target="_blank"
                           rel="noopener noreferrer"
                         >
                           {c.title}
                         </a>
                       ) : (
-                        <span key={idx} class="am-cite">
+                        <span key={c.sourceId || idx} class="am-cite">
                           {c.title}
                         </span>
                       )
@@ -338,7 +712,7 @@ function AskminkWidgetApp({ runtime }: { runtime: SharedRuntime }) {
                   </div>
                 )}
 
-                {m.cards?.map((card, idx) => {
+                {dedupeCards(m.cards).map((card, idx) => {
                   if (card.type === 'booking_slots') {
                     return (
                       <BookingSlotsCard
@@ -352,19 +726,22 @@ function AskminkWidgetApp({ runtime }: { runtime: SharedRuntime }) {
                     );
                   }
                   if (card.type === 'product_card') {
+                    const pid = typeof card.productId === 'string' ? card.productId.trim() : '';
                     return (
-                      <div key={idx} class="am-card">
+                      <div key={pid ? `product-${pid}` : idx} class="am-card">
                         <div class="am-card-title">{card.name}</div>
                         <div class="am-card-desc">{card.description}</div>
                         <div class="am-price">{card.priceLabel}</div>
-                        <a
-                          class="am-btn"
-                          href={card.checkoutUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                        >
-                          {t.checkout}
-                        </a>
+                        {isSafeHttpUrl(card.checkoutUrl) && (
+                          <a
+                            class="am-btn"
+                            href={card.checkoutUrl.trim()}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                          >
+                            {t.checkout}
+                          </a>
+                        )}
                       </div>
                     );
                   }
@@ -416,6 +793,32 @@ function AskminkWidgetApp({ runtime }: { runtime: SharedRuntime }) {
                 })}
               </div>
             ))}
+
+            {showStarters && (
+              <div class="am-starters">
+                {starters.map((prompt) => (
+                  <button
+                    key={prompt}
+                    type="button"
+                    class="am-starter"
+                    onClick={() => sendMessage(prompt)}
+                  >
+                    {prompt}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {loading && (
+              <div class="am-msg am-msg-bot am-thinking" aria-live="polite">
+                <span class="am-dots" aria-hidden="true">
+                  <span />
+                  <span />
+                  <span />
+                </span>
+                <span>{t.thinking}</span>
+              </div>
+            )}
           </div>
 
           <form
@@ -428,6 +831,7 @@ function AskminkWidgetApp({ runtime }: { runtime: SharedRuntime }) {
             <input
               class="am-composer"
               placeholder={t.placeholder}
+              aria-label={t.placeholder}
               value={input}
               onInput={(e) => setInput((e.target as HTMLInputElement).value)}
               disabled={loading}
@@ -444,7 +848,7 @@ function AskminkWidgetApp({ runtime }: { runtime: SharedRuntime }) {
       <button
         type="button"
         class={`am-launcher ${!runtime.launcherLabel || open ? 'am-launcher-icon' : ''}`}
-        aria-label={open ? 'Close Askmink' : runtime.launcherLabel || 'Open Askmink'}
+        aria-label={open ? t.closeLauncher : runtime.launcherLabel || t.openLauncher}
         onClick={() => setOpen((o) => !o)}
       >
         {open ? '×' : runtime.launcherLabel ? `✦ ${runtime.launcherLabel}` : '✦'}
@@ -453,11 +857,35 @@ function AskminkWidgetApp({ runtime }: { runtime: SharedRuntime }) {
   );
 }
 
+function parseStarters(raw: string | null): string[] {
+  const trimmed = (raw || '').trim();
+  if (!trimmed) return [];
+  if (trimmed.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) {
+        const items = parsed.map((x) => String(x).trim()).filter(Boolean);
+        return Array.from(new Set(items)).slice(0, 6);
+      }
+    } catch {
+      // Fallback to delimiter parsing below
+    }
+  }
+  const sep = trimmed.includes(';;') ? ';;' : '|';
+  const items = trimmed
+    .split(sep)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return Array.from(new Set(items)).slice(0, 6);
+}
+
 function bootWidget() {
-  const scriptEl =
-    (document.currentScript as HTMLScriptElement | null) ||
-    document.querySelector<HTMLScriptElement>('script[data-agent]');
-  if (!scriptEl) return;
+  let scriptEl = document.currentScript as HTMLScriptElement | null;
+  if (!scriptEl) {
+    const scripts = document.querySelectorAll<HTMLScriptElement>('script[data-agent]');
+    scriptEl = scripts[scripts.length - 1] || null;
+  }
+  if (!scriptEl || !document.body) return;
 
   const agentId = scriptEl.getAttribute('data-agent');
   if (!agentId) return;
@@ -481,6 +909,8 @@ function bootWidget() {
   const runtime: SharedRuntime = {
     apiBase: apiBase.replace(/\/$/, ''),
     agentId,
+    lang: normalizeLang(scriptEl.getAttribute('data-lang')),
+    starters: parseStarters(scriptEl.getAttribute('data-starters')),
     position: rawPos === 'bottom-left' ? 'bottom-left' : 'bottom-right',
     theme: rawTheme === 'dark' ? 'dark' : 'light',
     radius: rawRadius === 'classic' || rawRadius === 'sharp' ? rawRadius : 'rounded',
@@ -504,6 +934,12 @@ function bootWidget() {
     },
   };
 
+  document.querySelectorAll('#askmink-widget-host').forEach((existing) => {
+    const prevMount = existing.shadowRoot?.querySelector('[data-am-mount="1"]');
+    if (prevMount) render(null, prevMount);
+    existing.remove();
+  });
+
   const host = document.createElement('div');
   host.id = 'askmink-widget-host';
   document.body.appendChild(host);
@@ -514,6 +950,7 @@ function bootWidget() {
   shadow.appendChild(style);
 
   const mount = document.createElement('div');
+  mount.setAttribute('data-am-mount', '1');
   shadow.appendChild(mount);
   render(<AskminkWidgetApp runtime={runtime} />, mount);
 }

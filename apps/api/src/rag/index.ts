@@ -327,12 +327,23 @@ export async function hybridSearchKnowledge(params: {
   merged.sort((a, b) => b.rrfScore - a.rrfScore);
   const topChunks = merged.slice(0, topK);
 
-  const citations: Citation[] = topChunks.map((c) => ({
-    sourceId: c.sourceId,
-    title: c.title,
-    url: c.url,
-    snippet: c.content.slice(0, 220),
-    score: c.rrfScore,
+  const citationsBySource = new Map<string, Citation>();
+  for (const c of topChunks) {
+    const existing = citationsBySource.get(c.sourceId);
+    if (!existing || c.rrfScore > existing.score) {
+      citationsBySource.set(c.sourceId, {
+        sourceId: c.sourceId,
+        title: c.title,
+        url: c.url,
+        snippet: c.content.slice(0, 220),
+        score: c.rrfScore,
+      });
+    }
+  }
+
+  const citations: Citation[] = Array.from(citationsBySource.values()).map((c, idx) => ({
+    ...c,
+    index: idx + 1,
   }));
 
   return { chunks: topChunks, citations };

@@ -39,6 +39,8 @@ import {
   CreateTicketSchema,
   CreateToolSchema,
   CreateWebhookSchema,
+  DEFAULT_SYSTEM_PROMPTS_BY_LANG,
+  DEFAULT_WELCOME_BY_LANG,
   LoginSchema,
   SignupSchema,
   TestToolSchema,
@@ -46,6 +48,7 @@ import {
   UpdateAccountProfileSchema,
   UpdateAccountSettingsSchema,
   UpdateAgentSchema,
+  UpdateKnowledgeSourceSchema,
   UpdateProductSchema,
   UpdateTicketSchema,
   UpdateToolSchema,
@@ -85,13 +88,72 @@ export interface RouteDeps {
   orchestrator: AgentOrchestrator;
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isUuid(value: string): boolean {
+  return UUID_RE.test(value);
+}
+
+function parseHttpOrigin(raw: string | undefined): URL | null {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  if (!trimmed || /[\u0000-\u001f\u007f]/.test(trimmed)) return null;
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+    if (!parsed.host || parsed.username || parsed.password) return null;
+    if (parsed.origin.toLowerCase() !== trimmed.replace(/\/$/, '').toLowerCase()) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
 function isOriginAllowed(origin: string | undefined, allowedDomains: string[]): boolean {
-  if (!origin) return false;
+  const parsedOrigin = parseHttpOrigin(origin);
+  if (!parsedOrigin) return false;
+  const normalizedOrigin = parsedOrigin.origin.toLowerCase();
   return allowedDomains.some((allowed) => {
-    const normalizedAllowed = allowed.replace(/\/$/, '').toLowerCase();
-    const normalizedOrigin = origin.replace(/\/$/, '').toLowerCase();
+    const normalizedAllowed = allowed.trim().replace(/\/$/, '').toLowerCase();
     return normalizedAllowed === normalizedOrigin;
   });
+}
+
+function isSameAppOrDevOrigin(
+  origin: string | undefined,
+  reqHost: string | undefined,
+  config: AppConfig
+): boolean {
+  const parsedOrigin = parseHttpOrigin(origin);
+  if (!parsedOrigin) return false;
+  const normalizedOrigin = parsedOrigin.origin.toLowerCase();
+
+  const appCandidates = [
+    config.appUrl,
+    ...(config.corsOrigin ? config.corsOrigin.split(',').map((s) => s.trim()) : []),
+    'http://127.0.0.1:5173',
+    'http://localhost:5173',
+  ].filter(Boolean);
+
+  for (const candidate of appCandidates) {
+    const parsedCandidate = parseHttpOrigin(candidate);
+    if (parsedCandidate && parsedCandidate.origin.toLowerCase() === normalizedOrigin) {
+      return true;
+    }
+  }
+
+  if (reqHost) {
+    const normalizedReqHost = reqHost.trim().toLowerCase();
+    if (
+      normalizedReqHost &&
+      !/[\s/@\\]/.test(normalizedReqHost) &&
+      parsedOrigin.host.toLowerCase() === normalizedReqHost
+    ) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 export function registerRoutes(app: Hono, deps: RouteDeps): void {
@@ -162,6 +224,15 @@ export function registerRoutes(app: Hono, deps: RouteDeps): void {
     const user = await auth.resolveRequestUser(c);
     if (!user) return c.json({ user: null }, 401);
     return c.json({ user, mode: config.appMode });
+  });
+
+  app.get('/api/auth/session', async (c) => {
+    const user = await auth.resolveRequestUser(c);
+    return c.json({
+      authenticated: Boolean(user),
+      user: user ?? null,
+      mode: config.appMode,
+    });
   });
 
   // =========================================================================
@@ -605,10 +676,23 @@ export function registerRoutes(app: Hono, deps: RouteDeps): void {
       where: eq(workspaces.id, workspaceId),
     });
     const wsDomains = Array.isArray(workspace?.allowedDomains) ? workspace.allowedDomains : [];
-    const hasExplicitDomains =
-      rawBody && typeof rawBody === 'object' && Array.isArray((rawBody as any).allowedDomains);
+    const rawObj =
+      rawBody && typeof rawBody === 'object' ? (rawBody as Record<string, unknown>) : {};
+    const hasExplicitDomains = Array.isArray(rawObj.allowedDomains);
     const resolvedDomains =
       wsDomains.length > 0 && !hasExplicitDomains ? wsDomains : parsed.data.allowedDomains;
+
+    const hasCustomSystemPrompt =
+      typeof rawObj.systemPrompt === 'string' && rawObj.systemPrompt.trim().length > 0;
+    const hasCustomWelcomeMessage =
+      typeof rawObj.welcomeMessage === 'string' && rawObj.welcomeMessage.trim().length > 0;
+
+    const resolvedSystemPrompt = hasCustomSystemPrompt
+      ? parsed.data.systemPrompt
+      : DEFAULT_SYSTEM_PROMPTS_BY_LANG[parsed.data.defaultLanguage];
+    const resolvedWelcomeMessage = hasCustomWelcomeMessage
+      ? parsed.data.welcomeMessage
+      : DEFAULT_WELCOME_BY_LANG[parsed.data.defaultLanguage];
 
     const widgetJwtSecret = generateRandomToken(32);
     const [created] = await db
@@ -616,6 +700,8 @@ export function registerRoutes(app: Hono, deps: RouteDeps): void {
       .values({
         workspaceId,
         ...parsed.data,
+        systemPrompt: resolvedSystemPrompt,
+        welcomeMessage: resolvedWelcomeMessage,
         allowedDomains: resolvedDomains,
         chatProviderKeyId: null,
         embeddingProviderKeyId: null,
@@ -706,6 +792,7 @@ export function registerRoutes(app: Hono, deps: RouteDeps): void {
 
   // Helper to verify agent ownership
   async function assertAgentOwner(agentId: string, workspaceId: string) {
+    if (!isUuid(agentId)) return undefined;
     return db.query.agents.findFirst({
       where: and(eq(agents.id, agentId), eq(agents.workspaceId, workspaceId)),
     });
@@ -857,6 +944,100 @@ export function registerRoutes(app: Hono, deps: RouteDeps): void {
     } catch (err) {
       return c.json({ error: (err as Error).message }, 400);
     }
+  });
+
+  admin.patch('/agents/:agentId/knowledge/:sourceId', async (c) => {
+    const { workspaceId } = c.get('authUser');
+    const agentId = c.req.param('agentId');
+    const sourceId = c.req.param('sourceId');
+    if (!(await assertAgentOwner(agentId, workspaceId))) {
+      return c.json({ error: 'Agent not found' }, 404);
+    }
+    if (!isUuid(sourceId)) {
+      return c.json({ error: 'Source not found' }, 404);
+    }
+
+    const parsed = UpdateKnowledgeSourceSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) {
+      return c.json({ error: 'Validation failed', details: parsed.error.flatten() }, 400);
+    }
+
+    const { title, content, sourceUrl } = parsed.data;
+    if (title === undefined && content === undefined && sourceUrl === undefined) {
+      return c.json({ error: 'At least one field (title, content, or sourceUrl) must be provided' }, 400);
+    }
+
+    const existing = await db.query.knowledgeSources.findFirst({
+      where: and(
+        eq(knowledgeSources.id, sourceId),
+        eq(knowledgeSources.agentId, agentId),
+        eq(knowledgeSources.workspaceId, workspaceId)
+      ),
+    });
+    if (!existing) {
+      return c.json({ error: 'Source not found' }, 404);
+    }
+
+    if (content !== undefined && existing.type !== 'text') {
+      return c.json({ error: 'Content can only be edited for text knowledge sources' }, 400);
+    }
+
+    if (
+      sourceUrl === '' &&
+      (existing.type === 'url' || existing.type === 'sitemap' || existing.type === 'llms_txt')
+    ) {
+      return c.json({ error: 'sourceUrl cannot be empty for URL knowledge sources' }, 400);
+    }
+
+    const nextTitle = title ?? existing.title;
+    const nextRawContent = content !== undefined ? content : existing.rawContent;
+    const nextSourceUrl =
+      sourceUrl === undefined ? existing.sourceUrl : sourceUrl === '' ? null : sourceUrl;
+
+    const needsReingest =
+      nextTitle !== existing.title ||
+      nextRawContent !== existing.rawContent ||
+      nextSourceUrl !== existing.sourceUrl;
+
+    const updateSet: Partial<typeof knowledgeSources.$inferInsert> = {
+      updatedAt: new Date(),
+    };
+    if (title !== undefined) updateSet.title = title;
+    if (content !== undefined) updateSet.rawContent = content;
+    if (sourceUrl !== undefined) updateSet.sourceUrl = nextSourceUrl;
+    if (needsReingest) {
+      updateSet.status = 'pending';
+      updateSet.errorMessage = null;
+    }
+
+    const [updated] = await db
+      .update(knowledgeSources)
+      .set(updateSet)
+      .where(
+        and(
+          eq(knowledgeSources.id, existing.id),
+          eq(knowledgeSources.agentId, agentId),
+          eq(knowledgeSources.workspaceId, workspaceId)
+        )
+      )
+      .returning();
+
+    if (needsReingest && updated) {
+      await jobs.enqueueKnowledgeIngest({
+        sourceId: updated.id,
+        workspaceId,
+        agentId,
+        ...(updated.type === 'url' || updated.type === 'sitemap' || updated.type === 'llms_txt'
+          ? {
+              crawlType: updated.type,
+              allowLoopbackForTest:
+                config.nodeEnv === 'test' && c.req.header('x-test-allow-loopback') === '1',
+            }
+          : {}),
+      });
+    }
+
+    return c.json({ item: updated, source: updated });
   });
 
   admin.delete('/agents/:agentId/knowledge/:sourceId', async (c) => {
@@ -1352,7 +1533,7 @@ export function registerRoutes(app: Hono, deps: RouteDeps): void {
 
   app.use('/api/widget/:agentId/*', widgetRateLimit, async (c, next) => {
     const agentId = c.req.param('agentId');
-    if (!agentId) return c.json({ error: 'Agent not found' }, 404);
+    if (!agentId || !isUuid(agentId)) return c.json({ error: 'Agent not found' }, 404);
     const agent = await db.query.agents.findFirst({ where: eq(agents.id, agentId) });
     if (!agent) return c.json({ error: 'Agent not found' }, 404);
     const workspace = await db.query.workspaces.findFirst({
@@ -1361,11 +1542,12 @@ export function registerRoutes(app: Hono, deps: RouteDeps): void {
     });
 
     const origin = c.req.header('origin');
+    const reqHost = c.req.header('host');
     const wsDomains = Array.isArray(workspace?.allowedDomains) ? workspace.allowedDomains : [];
     const allowed = wsDomains.length > 0 ? wsDomains : (agent.allowedDomains ?? []);
-    // If Origin header is sent (browser cross-origin request), strictly enforce allowlist
+    // If Origin header is sent (browser cross-origin request), strictly enforce allowlist + same-app origin
     if (origin) {
-      if (!isOriginAllowed(origin, allowed)) {
+      if (!isOriginAllowed(origin, allowed) && !isSameAppOrDevOrigin(origin, reqHost, config)) {
         return c.json({ error: 'Origin not allowed for this agent' }, 403);
       }
       c.header('Access-Control-Allow-Origin', origin);
@@ -1389,9 +1571,9 @@ export function registerRoutes(app: Hono, deps: RouteDeps): void {
       name: agent.name,
       defaultLanguage: agent.defaultLanguage,
       welcomeMessage: agent.welcomeMessage,
+      starterPrompts: agent.starterPrompts ?? [],
       primaryColor: agent.primaryColor,
       showBranding: agent.showBranding,
-      urlRules: agent.urlRules,
     });
   });
 
@@ -1416,7 +1598,7 @@ export function registerRoutes(app: Hono, deps: RouteDeps): void {
             ...parsed.data,
             allowLoopbackForTest: allowLoopback,
           });
-          await stream.writeSSE({ event: 'meta', data: JSON.stringify({ conversationId: result.conversationId, mode: result.mode, language: result.language }) });
+          await stream.writeSSE({ event: 'meta', data: JSON.stringify({ conversationId: result.conversationId, language: result.language }) });
           await stream.writeSSE({ event: 'text', data: JSON.stringify({ text: result.text }) });
           if (result.citations.length > 0) {
             await stream.writeSSE({ event: 'citations', data: JSON.stringify({ citations: result.citations }) });
@@ -1441,7 +1623,6 @@ export function registerRoutes(app: Hono, deps: RouteDeps): void {
       return c.json({
         conversationId: result.conversationId,
         messageId: result.messageId,
-        mode: result.mode,
         language: result.language,
         text: result.text,
         citations: result.citations,

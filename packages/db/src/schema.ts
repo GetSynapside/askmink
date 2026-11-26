@@ -11,7 +11,7 @@ import {
   type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
-import type { HttpToolParam, MessagePart, UrlRule } from '@askmink/shared';
+import type { HttpToolParam, MessagePart } from '@askmink/shared';
 
 // Native unconstrained pgvector column: supports ANY embedding dimension (e.g. 768, 1024, 1536, 3072)
 // without truncation or schema migrations. Partial expression HNSW indexes handle fast ANN search.
@@ -127,8 +127,8 @@ export const agents = pgTable('agents', {
   defaultLanguage: text('default_language').notNull().default('en'),
   systemPrompt: text('system_prompt').notNull(),
   welcomeMessage: text('welcome_message').notNull().default('Hi! How can I help you today?'),
+  starterPrompts: jsonb('starter_prompts').$type<string[]>().notNull().default([]),
   allowedDomains: jsonb('allowed_domains').$type<string[]>().notNull().default([]),
-  urlRules: jsonb('url_rules').$type<UrlRule[]>().notNull().default([]),
   widgetJwtSecretEncrypted: text('widget_jwt_secret_encrypted').notNull(),
   chatProviderKeyId: uuid('chat_provider_key_id').references(() => providerKeys.id, {
     onDelete: 'set null',
@@ -278,7 +278,6 @@ export const conversations = pgTable('conversations', {
   agentId: uuid('agent_id')
     .notNull()
     .references(() => agents.id, { onDelete: 'cascade' }),
-  mode: text('mode').notNull().default('sales'), // 'sales' | 'support'
   status: text('status').notNull().default('resolved_ai'), // 'resolved_ai' | 'ticket_open' | 'lead_booked'
   language: text('language').notNull().default('en'),
   pageUrl: text('page_url').notNull().default('/'),
@@ -336,7 +335,6 @@ export const executionTraces = pgTable('execution_traces', {
     .notNull()
     .references(() => conversations.id, { onDelete: 'cascade' }),
   messageId: uuid('message_id').references(() => messages.id, { onDelete: 'set null' }),
-  mode: text('mode').notNull(),
   model: text('model').notNull(),
   ragChunks: jsonb('rag_chunks').$type<Array<Record<string, unknown>>>().notNull().default([]),
   toolCalls: jsonb('tool_calls').$type<Array<Record<string, unknown>>>().notNull().default([]),

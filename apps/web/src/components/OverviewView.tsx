@@ -17,8 +17,9 @@ import {
   Users,
   Wrench,
 } from 'lucide-react';
-import type { SupportedLanguage } from '@askmink/shared';
+import { DEFAULT_SYSTEM_PROMPTS_BY_LANG, type SupportedLanguage } from '@askmink/shared';
 import { apiRequest } from '@/lib/api';
+import { getAgentTemplates } from '@/lib/workflow';
 import { cn } from '@/lib/utils';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
@@ -116,22 +117,34 @@ export function OverviewView({
       ? Math.round((usage.turns / (usage.turns + usage.toolCalls)) * 100)
       : 0;
 
+  let behaviorEdited = false;
   let widgetCustomized = false;
   let embedCopied = false;
   try {
+    behaviorEdited = localStorage.getItem(`askmink_check_behavior_${agent.id}`) === '1';
     widgetCustomized = localStorage.getItem(`askmink_check_widget_${agent.id}`) === '1';
     embedCopied = localStorage.getItem(`askmink_check_embed_${agent.id}`) === '1';
   } catch {
     // Ignore storage read errors
   }
 
+  const trimmedPrompt = (agent.systemPrompt || '').trim();
+  const starterPrompts = new Set<string>([
+    ...Object.values(DEFAULT_SYSTEM_PROMPTS_BY_LANG).map((p) => p.trim()),
+    ...(['en', 'pt', 'es'] as SupportedLanguage[]).flatMap((l) =>
+      getAgentTemplates(l).map((tpl) => tpl.systemPrompt.trim())
+    ),
+  ]);
+  const behaviorDone =
+    behaviorEdited || (trimmedPrompt.length > 0 && !starterPrompts.has(trimmedPrompt));
+
   const checklistItems = [
     {
       id: 'agent',
       label: t.checkItemAgent,
       cta: t.checkItemAgentCta,
-      done: Boolean(agent.systemPrompt && agent.systemPrompt.trim().length > 0),
-      onClick: () => onNavigate('workflow'),
+      done: behaviorDone,
+      onClick: () => onNavigate('behavior'),
     },
     {
       id: 'ai',
@@ -266,7 +279,7 @@ export function OverviewView({
                           : 'bg-card border-border hover:border-primary'
                       )}
                     >
-                      <span className="flex items-center gap-2.5 min-w-0">
+                      <span className="flex items-center gap-2.5 min-w-0 flex-1">
                         <span
                           className={cn(
                             'size-5 rounded-full flex items-center justify-center shrink-0',
@@ -280,7 +293,7 @@ export function OverviewView({
                         </span>
                         <span
                           className={cn(
-                            'text-xs truncate',
+                            'text-xs whitespace-normal leading-snug text-left',
                             item.done
                               ? 'text-muted-foreground line-through'
                               : 'text-foreground font-medium'
@@ -356,7 +369,7 @@ export function OverviewView({
                     {Number(card.value).toLocaleString(locale)}
                   </div>
                   <div className="mt-1.5 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
-                    <span className="truncate">{card.sub}</span>
+                    <span className="min-w-0 flex-1 whitespace-normal leading-snug">{card.sub}</span>
                     <ArrowUpRight
                       className="size-3.5 opacity-0 group-hover:opacity-100 transition shrink-0"
                       aria-hidden="true"
@@ -386,14 +399,14 @@ export function OverviewView({
                 </span>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center justify-between gap-1">
-                    <span className="text-xs font-semibold text-foreground truncate">
+                    <span className="text-xs font-semibold text-foreground whitespace-normal leading-snug">
                       {t.setupDocsTitle}
                     </span>
                     {knowledge.ready > 0 && (
                       <CheckCircle2 className="size-3.5 text-emerald-500 shrink-0" aria-hidden="true" />
                     )}
                   </div>
-                  <div className="text-[11px] text-muted-foreground mt-0.5 truncate">
+                  <div className="text-[11px] text-muted-foreground mt-0.5 whitespace-normal leading-snug">
                     {knowledge.chunks > 0
                       ? `${knowledge.chunks.toLocaleString(locale)} ${t.setupDocsReady}`
                       : t.setupDocsEmpty}
@@ -414,10 +427,10 @@ export function OverviewView({
                   <Paintbrush className="size-4 text-white" />
                 </span>
                 <div className="min-w-0 flex-1">
-                  <div className="text-xs font-semibold text-foreground truncate">
+                  <div className="text-xs font-semibold text-foreground whitespace-normal leading-snug">
                     {t.setupWidgetTitle}
                   </div>
-                  <div className="text-[11px] text-muted-foreground mt-0.5 truncate">
+                  <div className="text-[11px] text-muted-foreground mt-0.5 whitespace-normal leading-snug">
                     {t.setupWidgetDesc} · {(agent.defaultLanguage || 'en').toUpperCase()}
                   </div>
                 </div>
@@ -435,10 +448,10 @@ export function OverviewView({
                   <Wrench className="size-4" />
                 </span>
                 <div className="min-w-0 flex-1">
-                  <div className="text-xs font-semibold text-foreground truncate">
+                  <div className="text-xs font-semibold text-foreground whitespace-normal leading-snug">
                     {t.setupToolsTitle}
                   </div>
-                  <div className="text-[11px] text-muted-foreground mt-0.5 truncate">
+                  <div className="text-[11px] text-muted-foreground mt-0.5 whitespace-normal leading-snug">
                     {t.setupToolsDesc}
                   </div>
                 </div>
@@ -456,10 +469,10 @@ export function OverviewView({
                   <Code2 className="size-4" />
                 </span>
                 <div className="min-w-0 flex-1">
-                  <div className="text-xs font-semibold text-foreground truncate">
+                  <div className="text-xs font-semibold text-foreground whitespace-normal leading-snug">
                     {t.setupEmbedTitle}
                   </div>
-                  <div className="text-[11px] text-muted-foreground mt-0.5 truncate">
+                  <div className="text-[11px] text-muted-foreground mt-0.5 whitespace-normal leading-snug">
                     {allowedDomains.length} {t.setupDomainsCount}
                   </div>
                 </div>
@@ -695,8 +708,6 @@ export function OverviewView({
                         {c.visitorEmail || c.pageUrl || '/'}
                       </div>
                       <div className="text-[11px] text-muted-foreground flex items-center gap-1.5">
-                        <span className="capitalize">{c.mode}</span>
-                        <span>·</span>
                         <span>
                           {c.messageCount} {t.messagesShort}
                         </span>

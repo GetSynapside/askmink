@@ -49,3 +49,37 @@ export async function apiRequest<T = any>(
   }
   return data as T;
 }
+
+export interface AuthSessionResponse {
+  authenticated: boolean;
+  user: any | null;
+  mode?: string;
+}
+
+let sessionInFlight: Promise<AuthSessionResponse> | null = null;
+
+export function fetchAuthSession(): Promise<AuthSessionResponse> {
+  if (sessionInFlight) return sessionInFlight;
+  sessionInFlight = (async () => {
+    try {
+      const res = await fetch('/api/auth/session', {
+        credentials: 'include',
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data || typeof data !== 'object') {
+        return { authenticated: false, user: null };
+      }
+      const authenticated = Boolean((data as any).authenticated && (data as any).user);
+      return {
+        authenticated,
+        user: authenticated ? (data as any).user : null,
+        mode: typeof (data as any).mode === 'string' ? (data as any).mode : undefined,
+      };
+    } catch {
+      return { authenticated: false, user: null };
+    } finally {
+      sessionInFlight = null;
+    }
+  })();
+  return sessionInFlight;
+}

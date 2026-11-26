@@ -1,5 +1,5 @@
 import nodemailer from 'nodemailer';
-import { and, eq, gte, lte } from 'drizzle-orm';
+import { and, eq, gte, lte, sql } from 'drizzle-orm';
 import type { AskminkDb } from '@askmink/db';
 import { availabilityBlocks, availabilityRules, bookings } from '@askmink/db';
 import type { AppConfig } from '../config.js';
@@ -141,25 +141,31 @@ export async function createAtomicBooking(
     throw new Error('Booking end time must be after start time');
   }
   try {
-    const [created] = await db
-      .insert(bookings)
-      .values({
-        workspaceId: data.workspaceId,
-        agentId: data.agentId,
-        conversationId: data.conversationId ?? null,
-        visitorName: data.visitorName,
-        visitorEmail: data.visitorEmail,
-        startsAt: data.startsAt,
-        endsAt: data.endsAt,
-        timezone: data.timezone,
-        notes: data.notes ?? '',
-        status: 'confirmed',
-      })
-      .returning();
+    const [created] = await db.transaction(async (tx) => {
+      // Serialize concurrent bookings per agentId so overlapping GiST inserts hit 23P01 cleanly instead of 40P01 deadlocking
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${data.agentId}::text))`);
+      return tx
+        .insert(bookings)
+        .values({
+          workspaceId: data.workspaceId,
+          agentId: data.agentId,
+          conversationId: data.conversationId ?? null,
+          visitorName: data.visitorName,
+          visitorEmail: data.visitorEmail,
+          startsAt: data.startsAt,
+          endsAt: data.endsAt,
+          timezone: data.timezone,
+          notes: data.notes ?? '',
+          status: 'confirmed',
+        })
+        .returning();
+    });
     return created!;
   } catch (err: any) {
     // PostgreSQL 23P01 = exclusion_violation from bookings_no_overlap GiST constraint
-    if (err?.code === '23P01' || err?.cause?.code === '23P01') {
+    // PostgreSQL 40P01 = deadlock_detected (defensive fallback if concurrent GiST contention occurs)
+    const codes = [err?.code, err?.cause?.code];
+    if (codes.includes('23P01') || codes.includes('40P01')) {
       throw new BookingConflictError();
     }
     throw err;

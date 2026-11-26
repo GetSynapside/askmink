@@ -2,28 +2,27 @@ import { useEffect, useRef, useState } from 'react';
 import {
   Activity,
   Bot,
+  CalendarCheck,
+  CheckCircle2,
+  Clock,
+  Code2,
+  ExternalLink,
   FileText,
-  Globe,
   RotateCcw,
   Send,
+  ShieldAlert,
   Sparkles,
+  Ticket,
   Wrench,
 } from 'lucide-react';
 import type { SupportedLanguage } from '@askmink/shared';
 import { apiRequest } from '@/lib/api';
 import { cn } from '@/lib/utils';
-import { Badge } from '@/components/ui/badge';
+import { SafeMarkdown, isSafeHttpUrl } from '@/components/SafeMarkdown';
+import { Badge, badgeVariants } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 import { Separator } from '@/components/ui/separator';
 
 interface PlaygroundViewProps {
@@ -37,10 +36,8 @@ const COPY: Record<
   {
     title: string;
     subtitle: string;
-    urlLabel: string;
-    urlPlaceholder: string;
-    langLabel: string;
     reset: string;
+    openWidgetTest: string;
     emptyTitle: string;
     emptyDesc: string;
     inputPlaceholder: string;
@@ -49,7 +46,6 @@ const COPY: Record<
     traceTitle: string;
     traceEmptyTitle: string;
     traceEmptyDesc: string;
-    metricMode: string;
     metricLatency: string;
     metricModel: string;
     metricTokens: string;
@@ -64,21 +60,18 @@ const COPY: Record<
   en: {
     title: 'Playground',
     subtitle: 'Test responses, RAG retrieval, and tools in real time.',
-    urlLabel: 'Simulated URL',
-    urlPlaceholder: '/pricing, /docs/api',
-    langLabel: 'Language',
     reset: 'Reset chat',
+    openWidgetTest: 'Test Widget',
     emptyTitle: 'Start a test conversation',
     emptyDesc:
-      'Send a message or pick a starter prompt to inspect hybrid RAG chunks, Dual-Mode routing, HTTP/MCP tools, and Generative UI cards.',
+      'Send a message or pick a starter prompt to inspect hybrid RAG chunks, HTTP/MCP tools, and Generative UI cards.',
     inputPlaceholder: 'Ask about docs, pricing, schedule a meeting, or trigger a tool...',
     send: 'Send',
     thinking: 'Thinking...',
     traceTitle: 'Trace Inspector (X-Ray)',
     traceEmptyTitle: 'No execution trace yet',
     traceEmptyDesc:
-      'Send a message in the playground to inspect routing mode, latency, retrieved RAG chunks, and tool calls.',
-    metricMode: 'MODE',
+      'Send a message in the playground to inspect latency, retrieved RAG chunks, and tool calls.',
     metricLatency: 'LATENCY',
     metricModel: 'MODEL',
     metricTokens: 'EST. TOKENS',
@@ -97,21 +90,18 @@ const COPY: Record<
   pt: {
     title: 'Playground',
     subtitle: 'Teste respostas, busca RAG e ferramentas em tempo real.',
-    urlLabel: 'URL simulada',
-    urlPlaceholder: '/pricing, /docs/api',
-    langLabel: 'Idioma',
     reset: 'Limpar chat',
+    openWidgetTest: 'Testar Widget',
     emptyTitle: 'Inicie uma conversa de teste',
     emptyDesc:
-      'Envie uma mensagem ou escolha uma sugestão para inspecionar trechos RAG, roteamento Dual-Mode, ferramentas HTTP/MCP e cards generativos.',
+      'Envie uma mensagem ou escolha uma sugestão para inspecionar trechos RAG, ferramentas HTTP/MCP e cards generativos.',
     inputPlaceholder: 'Pergunte sobre docs, preços, agende uma reunião ou acione uma ferramenta...',
     send: 'Enviar',
     thinking: 'Pensando...',
     traceTitle: 'Inspetor de Trace (X-Ray)',
     traceEmptyTitle: 'Nenhum trace de execução ainda',
     traceEmptyDesc:
-      'Envie uma mensagem no playground para inspecionar o modo ativo, latência, trechos RAG recuperados e chamadas de ferramentas.',
-    metricMode: 'MODO',
+      'Envie uma mensagem no playground para inspecionar latência, trechos RAG recuperados e chamadas de ferramentas.',
     metricLatency: 'LATÊNCIA',
     metricModel: 'MODELO',
     metricTokens: 'TOKENS EST.',
@@ -130,21 +120,18 @@ const COPY: Record<
   es: {
     title: 'Playground',
     subtitle: 'Prueba respuestas, recuperación RAG y herramientas en tiempo real.',
-    urlLabel: 'URL simulada',
-    urlPlaceholder: '/pricing, /docs/api',
-    langLabel: 'Idioma',
     reset: 'Reiniciar chat',
+    openWidgetTest: 'Probar Widget',
     emptyTitle: 'Inicia una conversación de prueba',
     emptyDesc:
-      'Envía un mensaje o elige una sugerencia para inspeccionar fragmentos RAG, enrutamiento Dual-Mode, herramientas HTTP/MCP y tarjetas generativas.',
+      'Envía un mensaje o elige una sugerencia para inspeccionar fragmentos RAG, herramientas HTTP/MCP y tarjetas generativas.',
     inputPlaceholder: 'Pregunta sobre docs, precios, agenda una reunión o ejecuta una herramienta...',
     send: 'Enviar',
     thinking: 'Pensando...',
     traceTitle: 'Inspector de Traza (X-Ray)',
     traceEmptyTitle: 'Aún no hay traza de ejecución',
     traceEmptyDesc:
-      'Envía un mensaje en el playground para inspeccionar el modo, latencia, fragmentos RAG recuperados y llamadas a herramientas.',
-    metricMode: 'MODO',
+      'Envía un mensaje en el playground para inspeccionar latencia, fragmentos RAG recuperados y llamadas a herramientas.',
     metricLatency: 'LATENCIA',
     metricModel: 'MODELO',
     metricTokens: 'TOKENS EST.',
@@ -162,10 +149,236 @@ const COPY: Record<
   },
 };
 
+function dedupeCards(cards?: any[]): any[] {
+  if (!Array.isArray(cards)) return [];
+  const seenProducts = new Set<string>();
+  const out: any[] = [];
+  for (const card of cards) {
+    if (!card || typeof card !== 'object') continue;
+    if (card.type === 'product_card') {
+      const pid = typeof card.productId === 'string' ? card.productId.trim() : '';
+      if (pid) {
+        if (seenProducts.has(pid)) continue;
+        seenProducts.add(pid);
+      }
+    }
+    out.push(card);
+  }
+  return out;
+}
+
+function dedupeCitations(citations?: any[]): any[] {
+  if (!Array.isArray(citations)) return [];
+  const seen = new Set<string>();
+  const out: any[] = [];
+  for (const c of citations) {
+    if (!c || typeof c !== 'object') continue;
+    const key =
+      typeof c.sourceId === 'string' && c.sourceId.trim()
+        ? c.sourceId.trim()
+        : `${c.title || ''}|${c.url || ''}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(c);
+  }
+  return out;
+}
+
+function PlaygroundCardItem({
+  card,
+  ui,
+  t,
+  loading,
+  onConfirm,
+}: {
+  card: any;
+  ui: { confirmExecute: string };
+  t?: Record<string, string>;
+  loading: boolean;
+  onConfirm: (card: any) => void;
+}) {
+  const [showJson, setShowJson] = useState(false);
+
+  return (
+    <Card className="mt-2.5 p-3.5 bg-muted/40 text-xs space-y-2.5">
+      <div className="flex items-center justify-between gap-2">
+        <Badge variant="secondary" className="font-mono text-[10px]">
+          {card.type}
+        </Badge>
+        <button
+          type="button"
+          onClick={() => setShowJson((v) => !v)}
+          className="inline-flex items-center gap-1 text-[11px] font-medium text-muted-foreground hover:text-foreground transition cursor-pointer"
+        >
+          <Code2 className="size-3" aria-hidden="true" />
+          <span>{showJson ? t?.hideJson || 'Hide JSON' : t?.viewJson || 'View JSON'}</span>
+        </button>
+      </div>
+
+      {card.type === 'product_card' && (
+        <div className="space-y-2">
+          <div className="flex items-start justify-between gap-2">
+            <div className="font-semibold text-sm text-foreground leading-snug">{card.name}</div>
+            {card.badge && (
+              <Badge variant="info" className="text-[10px] shrink-0">
+                {card.badge}
+              </Badge>
+            )}
+          </div>
+          {card.description && (
+            <p className="text-xs text-muted-foreground leading-relaxed">{card.description}</p>
+          )}
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+            {card.priceLabel && (
+              <span className="text-sm font-bold tabular-nums text-foreground">
+                {card.priceLabel}
+              </span>
+            )}
+            {isSafeHttpUrl(card.checkoutUrl) && (
+              <Button size="xs" asChild>
+                <a href={card.checkoutUrl.trim()} target="_blank" rel="noopener noreferrer">
+                  <span>{t?.playgroundCheckoutBtn || 'Proceed to checkout'}</span>
+                  <ExternalLink className="size-3" aria-hidden="true" />
+                </a>
+              </Button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {card.type === 'booking_slots' && (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <div className="font-semibold text-xs text-foreground flex items-center gap-1.5">
+              <Clock className="size-3.5 text-blue-600 shrink-0" aria-hidden="true" />
+              <span>{card.title}</span>
+            </div>
+            {card.timezone && (
+              <span className="text-[10px] font-mono text-muted-foreground">{card.timezone}</span>
+            )}
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {(Array.isArray(card.slots) ? card.slots : []).map((slot: any, sIdx: number) => (
+              <Badge key={sIdx} variant="outline" className="font-normal">
+                {slot.label}
+              </Badge>
+            ))}
+          </div>
+          <div className="text-[11px] text-muted-foreground tabular-nums">
+            {Array.isArray(card.slots) ? card.slots.length : 0}{' '}
+            {t?.playgroundSlotsCount || 'available slots'}
+          </div>
+        </div>
+      )}
+
+      {card.type === 'booking_confirmed' && (
+        <div className="space-y-1.5">
+          <div className="flex items-center gap-1.5 font-semibold text-xs text-emerald-700">
+            <CalendarCheck className="size-3.5 shrink-0" aria-hidden="true" />
+            <span>{card.visitorName}</span>
+            {card.bookingId && (
+              <Badge variant="secondary" className="font-mono text-[10px]">
+                #{String(card.bookingId).slice(0, 8)}
+              </Badge>
+            )}
+          </div>
+          {(card.startsAt || card.endsAt) && (
+            <div className="text-[11px] font-mono text-muted-foreground">
+              {card.startsAt} → {card.endsAt}
+            </div>
+          )}
+          {isSafeHttpUrl(card.icsDownloadUrl) && (
+            <Button variant="outline" size="xs" asChild>
+              <a href={card.icsDownloadUrl.trim()} target="_blank" rel="noopener noreferrer">
+                <ExternalLink className="size-3" aria-hidden="true" />
+                <span>ICS</span>
+              </a>
+            </Button>
+          )}
+        </div>
+      )}
+
+      {card.type === 'ticket_card' && (
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between gap-2">
+            <div className="font-semibold text-xs text-foreground flex items-center gap-1.5 min-w-0">
+              <Ticket className="size-3.5 text-amber-600 shrink-0" aria-hidden="true" />
+              <span className="truncate">{card.subject}</span>
+            </div>
+            <Badge
+              variant={card.status === 'resolved' ? 'success' : 'warning'}
+              className="text-[10px] shrink-0"
+            >
+              {card.status}
+            </Badge>
+          </div>
+          {card.ticketId && (
+            <div className="text-[10px] font-mono text-muted-foreground">#{card.ticketId}</div>
+          )}
+          {card.summary && (
+            <p className="text-xs text-muted-foreground leading-relaxed">{card.summary}</p>
+          )}
+        </div>
+      )}
+
+      {card.type === 'diagnostic_card' && (
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between gap-2">
+            <div className="font-semibold text-xs text-foreground flex items-center gap-1.5">
+              <CheckCircle2 className="size-3.5 text-blue-600 shrink-0" aria-hidden="true" />
+              <span className="font-mono">{card.toolName}</span>
+            </div>
+            <Badge
+              variant={
+                card.status === 'success'
+                  ? 'success'
+                  : card.status === 'error'
+                    ? 'destructive'
+                    : 'warning'
+              }
+              className="text-[10px] shrink-0"
+            >
+              {card.status}
+            </Badge>
+          </div>
+          {card.summary && (
+            <p className="text-xs text-muted-foreground leading-relaxed">{card.summary}</p>
+          )}
+        </div>
+      )}
+
+      {card.type === 'confirmation_request' && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-1.5 font-semibold text-xs text-foreground">
+            <ShieldAlert className="size-3.5 text-amber-600 shrink-0" aria-hidden="true" />
+            <span className="font-mono">{card.toolName}</span>
+          </div>
+          {card.description && (
+            <p className="text-xs text-muted-foreground leading-relaxed">{card.description}</p>
+          )}
+          <Button
+            type="button"
+            size="xs"
+            disabled={loading}
+            onClick={() => onConfirm(card)}
+          >
+            {ui.confirmExecute}
+          </Button>
+        </div>
+      )}
+
+      {showJson && (
+        <pre className="p-2.5 rounded-lg bg-background border border-border text-[11px] font-mono text-muted-foreground max-w-full overflow-x-auto whitespace-pre-wrap break-all leading-relaxed">
+          {JSON.stringify(card, null, 2)}
+        </pre>
+      )}
+    </Card>
+  );
+}
+
 export function PlaygroundView({ agent, lang = 'en', t }: PlaygroundViewProps) {
   const ui = COPY[lang] || COPY.en;
-  const [pageUrl, setPageUrl] = useState('/pricing');
-  const [language, setLanguage] = useState<'en' | 'pt' | 'es'>(agent.defaultLanguage || lang || 'en');
+  const language: SupportedLanguage = (agent.defaultLanguage as SupportedLanguage) || lang || 'en';
   const [input, setInput] = useState('');
   const [conversationId, setConversationId] = useState<string | undefined>();
   const [messages, setMessages] = useState<any[]>([]);
@@ -174,7 +387,6 @@ export function PlaygroundView({ agent, lang = 'en', t }: PlaygroundViewProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    setLanguage(agent.defaultLanguage || lang || 'en');
     setMessages([]);
     setConversationId(undefined);
     setLastTrace(null);
@@ -196,7 +408,7 @@ export function PlaygroundView({ agent, lang = 'en', t }: PlaygroundViewProps) {
     try {
       const res = await apiRequest(`/api/agents/${agent.id}/playground/chat`, {
         method: 'POST',
-        body: { conversationId, message: trimmed, pageUrl, language, confirmedToolCallId },
+        body: { conversationId, message: trimmed, pageUrl: '/', language, confirmedToolCallId },
       });
       setConversationId(res.conversationId);
       setLastTrace(res.trace);
@@ -207,7 +419,6 @@ export function PlaygroundView({ agent, lang = 'en', t }: PlaygroundViewProps) {
           text: res.text,
           citations: res.citations,
           cards: res.cards,
-          mode: res.mode,
         },
       ]);
     } catch (err) {
@@ -235,61 +446,41 @@ export function PlaygroundView({ agent, lang = 'en', t }: PlaygroundViewProps) {
       {/* Left: Interactive Chat + Generative UI */}
       <div className="flex-1 flex flex-col min-w-0 min-h-0 bg-background">
         {/* Studio Toolbar */}
-        <div className="px-5 lg:px-6 py-4 bg-card border-b border-border flex flex-wrap items-center justify-between gap-3 shrink-0">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <h1 className="text-xl font-semibold text-foreground tracking-tight">
-                {ui.title}
-              </h1>
-              <Badge variant="secondary" className="font-normal truncate max-w-[160px]">
-                {agent.name}
-              </Badge>
-            </div>
-            <p className="text-xs text-muted-foreground mt-0.5 hidden sm:block">{ui.subtitle}</p>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2.5">
-            <div className="flex items-center gap-1.5">
-              <Label
-                htmlFor="playground-page-url"
-                className="text-[11px] text-muted-foreground shrink-0 hidden md:inline-flex items-center gap-1"
-              >
-                <Globe className="size-3" aria-hidden="true" />
-                <span>{ui.urlLabel}</span>
-              </Label>
-              <Input
-                id="playground-page-url"
-                aria-label={ui.urlLabel}
-                className="w-40 sm:w-48 bg-muted/40 font-mono"
-                value={pageUrl}
-                onChange={(e) => setPageUrl(e.target.value)}
-                placeholder={ui.urlPlaceholder}
-              />
+        <div className="px-5 lg:px-6 py-4 bg-card border-b border-border shrink-0">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 min-w-0">
+                <h1 className="text-xl font-semibold text-foreground tracking-tight">
+                  {ui.title}
+                </h1>
+                <Badge
+                  variant="secondary"
+                  title={agent.name}
+                  className="inline-block max-w-[240px] truncate align-middle font-normal"
+                >
+                  {agent.name}
+                </Badge>
+              </div>
+              <p className="text-xs text-muted-foreground mt-0.5 hidden sm:block">{ui.subtitle}</p>
             </div>
 
-            <div className="flex items-center gap-1.5">
-              <Label
-                htmlFor="playground-language"
-                className="text-[11px] text-muted-foreground shrink-0 sr-only"
-              >
-                {ui.langLabel}
-              </Label>
-              <Select value={language} onValueChange={(v) => setLanguage(v as 'en' | 'pt' | 'es')}>
-                <SelectTrigger id="playground-language" className="w-20" aria-label={ui.langLabel}>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="en">EN</SelectItem>
-                  <SelectItem value="pt">PT</SelectItem>
-                  <SelectItem value="es">ES</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+            <div className="flex flex-wrap items-center gap-2.5">
+              <Button type="button" variant="outline" onClick={handleReset}>
+                <RotateCcw className="size-3.5" aria-hidden="true" />
+                <span>{t?.resetPreviewChat || ui.reset}</span>
+              </Button>
 
-            <Button type="button" variant="outline" onClick={handleReset}>
-              <RotateCcw className="size-3.5" aria-hidden="true" />
-              <span>{t?.resetPreviewChat || ui.reset}</span>
-            </Button>
+              <Button variant="outline" asChild>
+                <a
+                  href={`/widget-test?agent=${encodeURIComponent(agent.id)}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <ExternalLink className="size-3.5" aria-hidden="true" />
+                  <span>{ui.openWidgetTest}</span>
+                </a>
+              </Button>
+            </div>
           </div>
         </div>
 
@@ -350,53 +541,49 @@ export function PlaygroundView({ agent, lang = 'en', t }: PlaygroundViewProps) {
                       : 'bg-card border border-border text-foreground shadow-2xs rounded-tl-sm'
                   )}
                 >
-                  {m.role !== 'user' && m.mode && (
-                    <div className="mb-1.5 flex items-center gap-1.5">
-                      <Badge variant="outline" className="text-[10px] uppercase tracking-wider">
-                        {m.mode === 'sales'
-                          ? t?.modeSales || 'Sales'
-                          : m.mode === 'support'
-                            ? t?.modeSupport || 'Support'
-                            : m.mode}
-                      </Badge>
-                    </div>
+                  {m.role === 'user' ? (
+                    <div className="whitespace-pre-wrap break-words">{m.text}</div>
+                  ) : (
+                    <SafeMarkdown content={m.text} />
                   )}
 
-                  <div className="whitespace-pre-wrap break-words">{m.text}</div>
-
-                  {m.citations?.length > 0 && (
+                  {dedupeCitations(m.citations).length > 0 && (
                     <div className="mt-2.5 flex flex-wrap gap-1.5">
-                      {m.citations.map((c: any, idx: number) => (
-                        <Badge key={idx} variant="info">
-                          <FileText className="size-3" aria-hidden="true" />
-                          <span>
-                            {c.title} ({c.score})
-                          </span>
-                        </Badge>
-                      ))}
+                      {dedupeCitations(m.citations).map((c: any, idx: number) => {
+                        const label = `[${c.index ?? idx + 1}] ${c.title}`;
+                        return isSafeHttpUrl(c.url) ? (
+                          <a
+                            key={c.sourceId || idx}
+                            href={c.url.trim()}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className={cn(
+                              badgeVariants({ variant: 'info' }),
+                              'hover:opacity-90 transition'
+                            )}
+                          >
+                            <FileText className="size-3" aria-hidden="true" />
+                            <span>{label}</span>
+                          </a>
+                        ) : (
+                          <Badge key={c.sourceId || idx} variant="info">
+                            <FileText className="size-3" aria-hidden="true" />
+                            <span>{label}</span>
+                          </Badge>
+                        );
+                      })}
                     </div>
                   )}
 
-                  {m.cards?.map((card: any, idx: number) => (
-                    <Card key={idx} className="mt-2.5 p-3 bg-muted/40 text-xs space-y-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <Badge variant="secondary" className="font-mono text-[10px]">
-                          {card.type}
-                        </Badge>
-                      </div>
-                      <pre className="text-[11px] font-mono text-muted-foreground overflow-x-auto leading-relaxed">
-                        {JSON.stringify(card, null, 2)}
-                      </pre>
-                      {card.type === 'confirmation_request' && (
-                        <Button
-                          type="button"
-                          size="xs"
-                          onClick={() => send(`Confirm ${card.toolName}`, card.toolCallId)}
-                        >
-                          {ui.confirmExecute}
-                        </Button>
-                      )}
-                    </Card>
+                  {dedupeCards(m.cards).map((card: any, idx: number) => (
+                    <PlaygroundCardItem
+                      key={`${card.type}-${card.productId || card.ticketId || card.bookingId || idx}`}
+                      card={card}
+                      ui={ui}
+                      t={t}
+                      loading={loading}
+                      onConfirm={(c) => send(`Confirm ${c.toolName}`, c.toolCallId)}
+                    />
                   ))}
                 </div>
               </div>
@@ -451,7 +638,7 @@ export function PlaygroundView({ agent, lang = 'en', t }: PlaygroundViewProps) {
       </div>
 
       {/* Right: Trace Inspector (X-Ray) */}
-      <aside className="w-full lg:w-[360px] xl:w-[380px] border-t lg:border-t-0 lg:border-l border-border bg-card flex flex-col shrink-0 max-h-[40vh] lg:max-h-none">
+      <aside className="w-full lg:w-[360px] xl:w-[380px] min-w-0 overflow-hidden border-t lg:border-t-0 lg:border-l border-border bg-card flex flex-col shrink-0 max-h-[40vh] lg:max-h-none">
         <div className="px-4 py-3.5 border-b border-border flex items-center justify-between gap-2 shrink-0">
           <div className="flex items-center gap-2 text-xs font-semibold text-foreground">
             <Activity className="size-4 text-blue-600 shrink-0" aria-hidden="true" />
@@ -464,7 +651,7 @@ export function PlaygroundView({ agent, lang = 'en', t }: PlaygroundViewProps) {
           )}
         </div>
 
-        <div className="flex-1 overflow-y-auto sidebar-scroll p-4 space-y-4">
+        <div className="flex-1 min-w-0 overflow-y-auto sidebar-scroll p-4 space-y-4">
           {!lastTrace ? (
             <Card className="border-dashed p-6 text-center space-y-2.5 bg-muted/20">
               <div className="size-9 rounded-xl bg-secondary text-secondary-foreground mx-auto flex items-center justify-center">
@@ -480,16 +667,6 @@ export function PlaygroundView({ agent, lang = 'en', t }: PlaygroundViewProps) {
               <div className="grid grid-cols-2 gap-2 text-xs">
                 <div className="p-2.5 rounded-lg bg-muted/60 border border-border">
                   <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-                    {ui.metricMode}
-                  </div>
-                  <div className="mt-1">
-                    <Badge variant="info" className="uppercase">
-                      {lastTrace.mode}
-                    </Badge>
-                  </div>
-                </div>
-                <div className="p-2.5 rounded-lg bg-muted/60 border border-border">
-                  <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
                     {ui.metricLatency}
                   </div>
                   <div className="font-semibold tabular-nums text-foreground mt-0.5">
@@ -498,6 +675,14 @@ export function PlaygroundView({ agent, lang = 'en', t }: PlaygroundViewProps) {
                 </div>
                 <div className="p-2.5 rounded-lg bg-muted/60 border border-border">
                   <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                    {ui.metricTokens}
+                  </div>
+                  <div className="font-semibold tabular-nums text-foreground mt-0.5">
+                    {lastTrace.estimatedTokens}
+                  </div>
+                </div>
+                <div className="col-span-2 p-2.5 rounded-lg bg-muted/60 border border-border">
+                  <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
                     {ui.metricModel}
                   </div>
                   <div
@@ -505,14 +690,6 @@ export function PlaygroundView({ agent, lang = 'en', t }: PlaygroundViewProps) {
                     title={lastTrace.model}
                   >
                     {lastTrace.model}
-                  </div>
-                </div>
-                <div className="p-2.5 rounded-lg bg-muted/60 border border-border">
-                  <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-                    {ui.metricTokens}
-                  </div>
-                  <div className="font-semibold tabular-nums text-foreground mt-0.5">
-                    {lastTrace.estimatedTokens}
                   </div>
                 </div>
               </div>
@@ -553,7 +730,7 @@ export function PlaygroundView({ agent, lang = 'en', t }: PlaygroundViewProps) {
 
               <Separator />
 
-              <div className="space-y-2">
+              <div className="space-y-2 min-w-0">
                 <div className="flex items-center justify-between gap-2">
                   <h2 className="text-xs font-semibold text-foreground flex items-center gap-1.5">
                     <Wrench className="size-3.5 text-muted-foreground" aria-hidden="true" />
@@ -567,7 +744,7 @@ export function PlaygroundView({ agent, lang = 'en', t }: PlaygroundViewProps) {
                 {toolCalls.length === 0 ? (
                   <p className="text-xs text-muted-foreground">{ui.noToolCalls}</p>
                 ) : (
-                  <pre className="p-3 rounded-xl bg-zinc-900 text-zinc-100 font-mono text-[11px] overflow-x-auto leading-relaxed">
+                  <pre className="p-3 rounded-xl bg-zinc-900 text-zinc-100 font-mono text-[11px] max-w-full overflow-x-auto whitespace-pre-wrap break-all leading-relaxed">
                     {JSON.stringify(toolCalls, null, 2)}
                   </pre>
                 )}

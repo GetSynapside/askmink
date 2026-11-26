@@ -140,8 +140,10 @@ export const WIDGET_CSS = `
   padding: 10px 12px;
   border-radius: var(--am-radius-bubble);
   font-size: 13.5px;
-  white-space: pre-wrap;
   word-break: break-word;
+}
+.am-user-text {
+  white-space: pre-wrap;
 }
 .am-msg-user {
   align-self: flex-end;
@@ -275,5 +277,102 @@ export const WIDGET_CSS = `
   font-size: 11px;
   color: var(--am-text-muted);
   background: var(--am-bg);
+}
+.am-md {
+  white-space: normal;
+}
+.am-md p {
+  margin: 0 0 6px;
+}
+.am-md p:last-child {
+  margin-bottom: 0;
+}
+.am-md ul,
+.am-md ol {
+  margin: 4px 0 6px;
+  padding-left: 18px;
+}
+.am-md ul:last-child,
+.am-md ol:last-child {
+  margin-bottom: 0;
+}
+.am-md li {
+  margin: 2px 0;
+}
+.am-md strong {
+  font-weight: 600;
+}
+.am-md em {
+  font-style: italic;
+}
+.am-md code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--am-bg-muted);
+  border: 1px solid var(--am-border);
+}
+.am-md a {
+  color: var(--am-primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  word-break: break-all;
+}
+.am-root[data-theme="dark"] .am-md a {
+  color: #93C5FD;
+}
+.am-starters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-top: 2px;
+}
+.am-starter {
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.3;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--am-border);
+  background: var(--am-bg);
+  color: var(--am-text);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+.am-starter:hover {
+  border-color: var(--am-primary);
+  color: var(--am-primary);
+}
+.am-thinking {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--am-text-muted);
+}
+.am-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.am-dots span {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.4;
+  animation: am-pulse 1.2s infinite ease-in-out;
+}
+.am-dots span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.am-dots span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+@keyframes am-pulse {
+  0%, 80%, 100% { opacity: 0.3; transform: scale(0.85); }
+  40% { opacity: 1; transform: scale(1); }
 }
 `;

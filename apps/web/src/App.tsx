@@ -31,7 +31,7 @@ import {
   X,
 } from 'lucide-react';
 import type { SupportedLanguage } from '@askmink/shared';
-import { apiRequest } from '@/lib/api';
+import { apiRequest, fetchAuthSession } from '@/lib/api';
 import { DICT } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -302,37 +302,62 @@ export function App() {
   const currentNav = allNavItems.find((n) => n.id === tab);
 
   async function loadAgents(preferredId?: string) {
-    const res = await apiRequest<{ items: any[] }>('/api/agents');
-    const items = res.items || [];
-    setAgents(items);
-    setAgentsLoaded(true);
+    try {
+      const res = await apiRequest<{ items: any[] }>('/api/agents');
+      const items = res.items || [];
+      setAgents(items);
 
-    const desired = preferredId ?? activeAgentId;
-    if (desired && items.some((a) => a.id === desired)) {
-      setActiveAgentId(desired);
-    } else if (items[0]) {
-      setActiveAgentId(items[0].id);
-    } else {
-      setActiveAgentId('');
+      const desired = preferredId ?? activeAgentId;
+      if (desired && items.some((a) => a.id === desired)) {
+        setActiveAgentId(desired);
+      } else if (items[0]) {
+        setActiveAgentId(items[0].id);
+      } else {
+        setActiveAgentId('');
+      }
+    } finally {
+      setAgentsLoaded(true);
     }
   }
 
   useEffect(() => {
-    apiRequest<{ user: any }>('/api/auth/me')
+    let cancelled = false;
+    fetchAuthSession()
       .then((res) => {
-        setUser(res.user);
-        return loadAgents();
+        if (cancelled) return;
+        if (res.authenticated && res.user) {
+          setUser(res.user);
+          return loadAgents();
+        }
+        setUser(null);
+        setAgents([]);
+        setAgentsLoaded(false);
+        return undefined;
       })
-      .catch(() => setUser(null))
-      .finally(() => setChecking(false));
+      .catch(() => {
+        if (!cancelled) {
+          setUser(null);
+          setAgents([]);
+          setAgentsLoaded(false);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setChecking(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  // Ensure canonical URL path on mount and sync browser Back/Forward
+  // Ensure canonical URL path once authenticated
   useEffect(() => {
+    if (checking || !user) return;
     const initialPath = window.location.pathname.replace(/^\/+|\/+$/g, '');
     const normalizedPath = `/${tab}`;
     if (
       window.location.pathname === '/' ||
+      initialPath === 'login' ||
+      initialPath === 'signup' ||
       initialPath === 'settings' ||
       initialPath === 'account/setting' ||
       initialPath === 'byok' ||
@@ -342,6 +367,11 @@ export function App() {
     ) {
       updateBrowserUrl(tab, ACCOUNT_TABS.has(tab) ? undefined : activeAgentId || undefined, true);
     }
+  }, [checking, user]);
+
+  // Sync browser Back/Forward when authenticated
+  useEffect(() => {
+    if (!user) return;
     function onPopState() {
       const nextTab = resolveTabFromLocation();
       setTabState(nextTab);
@@ -352,25 +382,35 @@ export function App() {
     }
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
-  }, []);
+  }, [user]);
 
   useEffect(() => {
-    if (!activeAgentId) {
+    if (!user || !agentsLoaded || !activeAgentId) {
       setOverview(null);
       return;
     }
+    let cancelled = false;
     apiRequest(`/api/agents/${activeAgentId}/overview`)
-      .then(setOverview)
+      .then((data) => {
+        if (!cancelled) setOverview(data);
+      })
       .catch(() => undefined);
-  }, [activeAgentId, tab]);
+    return () => {
+      cancelled = true;
+    };
+  }, [user, agentsLoaded, activeAgentId, tab]);
 
   // Sync document language and page title
   useEffect(() => {
     document.documentElement.lang = lang;
+    if (!user) {
+      document.title = 'Askmink';
+      return;
+    }
     if (currentNav?.label) {
       document.title = `${currentNav.label} | Askmink`;
     }
-  }, [lang, currentNav]);
+  }, [lang, currentNav, user]);
 
   // Global Cmd/Ctrl+K shortcut
   useEffect(() => {
@@ -407,8 +447,11 @@ export function App() {
 
   async function handleLogout() {
     await apiRequest('/api/auth/logout', { method: 'POST' }).catch(() => undefined);
+    setAgents([]);
+    setAgentsLoaded(false);
+    setOverview(null);
     setUser(null);
-    window.location.href = '/';
+    window.location.href = '/login';
   }
 
   async function handleCopySnippet(snippet: string) {
@@ -427,7 +470,7 @@ export function App() {
   if (checking) {
     return (
       <div className="min-h-screen flex items-center justify-center text-xs text-muted-foreground">
-        Loading Askmink...
+        {t.loadingApp || 'Loading Askmink...'}
       </div>
     );
   }
@@ -439,10 +482,19 @@ export function App() {
         onChangeLang={setLang}
         t={t}
         onAuthenticated={async (u) => {
+          setAgentsLoaded(false);
           setUser(u);
-          await loadAgents();
+          await loadAgents().catch(() => undefined);
         }}
       />
+    );
+  }
+
+  if (!agentsLoaded) {
+    return (
+      <div className="min-h-screen flex items-center justify-center text-xs text-muted-foreground">
+        {t.loadingApp || 'Loading Askmink...'}
+      </div>
     );
   }
 
@@ -502,7 +554,7 @@ export function App() {
                 Askmink
               </div>
               <div className="text-[10px] text-muted-foreground leading-tight truncate">
-                by Synapside
+                {t.bySynapside}
               </div>
             </div>
           </div>
@@ -812,15 +864,25 @@ export function App() {
               <Menu className="size-4" aria-hidden="true" />
             </Button>
 
-            <div className="text-xs text-muted-foreground truncate">
-              <span className="hidden sm:inline">
-                {ACCOUNT_TABS.has(tab)
-                  ? t.accountSectionLabel || 'Account'
-                  : activeAgent?.name || 'Askmink'}{' '}
-                /{' '}
-              </span>
-              <span className="font-semibold text-foreground">{currentNav?.label}</span>
-            </div>
+            {(() => {
+              const breadcrumbContext = ACCOUNT_TABS.has(tab)
+                ? t.accountSectionLabel || 'Account'
+                : activeAgent?.name?.trim() || '';
+              const breadcrumbLabel = currentNav?.label?.trim() || '';
+              return (
+                <div className="text-xs text-muted-foreground truncate">
+                  {breadcrumbContext && (
+                    <span className="hidden sm:inline">
+                      {breadcrumbContext}
+                      {breadcrumbLabel ? ' / ' : ''}
+                    </span>
+                  )}
+                  {breadcrumbLabel && (
+                    <span className="font-semibold text-foreground">{breadcrumbLabel}</span>
+                  )}
+                </div>
+              );
+            })()}
           </div>
 
           <Button
@@ -845,10 +907,12 @@ export function App() {
                 <span className="hidden sm:inline">{t.embedWidget}</span>
               </Button>
             )}
-            <Button type="button" onClick={() => handleSelectTab('playground')}>
-              <Sparkles className="size-3.5" aria-hidden="true" />
-              <span>{t.openPlayground}</span>
-            </Button>
+            {activeAgent && tab !== 'overview' && tab !== 'playground' && (
+              <Button type="button" onClick={() => handleSelectTab('playground')}>
+                <Sparkles className="size-3.5" aria-hidden="true" />
+                <span>{t.openPlayground}</span>
+              </Button>
+            )}
           </div>
         </header>
 
@@ -990,36 +1054,55 @@ export function App() {
 
       {/* Embed Widget Modal (shadcn Dialog) */}
       <Dialog open={showEmbed} onOpenChange={setShowEmbed}>
-        <DialogContent className="max-w-lg">
+        <DialogContent className="max-w-lg overflow-hidden">
           {activeAgent && (
             <>
               <DialogHeader>
                 <DialogTitle>{t.embedWidget}</DialogTitle>
                 <DialogDescription>{t.embedInstructions}</DialogDescription>
-              </DialogHeader>
-              <div className="relative">
-                <pre className="p-3 pr-24 rounded-xl bg-zinc-900 text-zinc-100 text-xs font-mono overflow-x-auto">
-                  {embedSnippet}
-                </pre>
                 <Button
                   type="button"
+                  variant="link"
                   size="xs"
-                  variant="ghost"
-                  onClick={() => handleCopySnippet(embedSnippet)}
-                  className="absolute top-2 right-2 bg-white/10 hover:bg-white/20 text-white hover:text-white"
+                  className="h-auto p-0 justify-start text-blue-600 w-fit"
+                  onClick={() => {
+                    setShowEmbed(false);
+                    handleSelectTab('account/settings');
+                  }}
                 >
-                  {copiedSnippet ? (
-                    <Check className="size-3 text-emerald-400" aria-hidden="true" />
-                  ) : (
-                    <Copy className="size-3" aria-hidden="true" />
-                  )}
-                  <span>{copiedSnippet ? t.copied : t.copySnippet}</span>
+                  <Settings className="size-3" aria-hidden="true" />
+                  <span>{t.goToAccountSettings}</span>
                 </Button>
+              </DialogHeader>
+              <div className="min-w-0 rounded-xl border border-zinc-800 bg-zinc-950 overflow-hidden">
+                <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-zinc-800 bg-zinc-900">
+                  <span className="text-[11px] font-mono text-zinc-400">HTML</span>
+                  <Button
+                    type="button"
+                    size="xs"
+                    variant="ghost"
+                    onClick={() => handleCopySnippet(embedSnippet)}
+                    className="bg-white/10 hover:bg-white/20 text-white hover:text-white"
+                  >
+                    {copiedSnippet ? (
+                      <Check className="size-3 text-emerald-400" aria-hidden="true" />
+                    ) : (
+                      <Copy className="size-3" aria-hidden="true" />
+                    )}
+                    <span>{copiedSnippet ? t.copied : t.copySnippet}</span>
+                  </Button>
+                </div>
+                <pre className="p-3 text-zinc-100 text-xs font-mono whitespace-pre-wrap break-all overflow-x-auto">
+                  {embedSnippet}
+                </pre>
               </div>
-              <div className="text-xs text-muted-foreground">
-                JS API: <code>window.Askmink.identify(signedJwt)</code> ·{' '}
-                <code>window.Askmink.setContext({'{ ... }'})</code> ·{' '}
-                <code>window.Askmink.open()</code>
+              <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-muted-foreground min-w-0">
+                <span>JS API:</span>
+                <code className="break-all">window.Askmink.identify(signedJwt)</code>
+                <span aria-hidden="true">·</span>
+                <code className="break-all">window.Askmink.setContext({'{ ... }'})</code>
+                <span aria-hidden="true">·</span>
+                <code className="break-all">window.Askmink.open()</code>
               </div>
             </>
           )}

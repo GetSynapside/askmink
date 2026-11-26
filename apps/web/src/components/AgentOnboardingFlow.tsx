@@ -1,7 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { ArrowRight, Globe, LogOut, Sparkles } from 'lucide-react';
-import type { SupportedLanguage } from '@askmink/shared';
+import {
+  DEFAULT_ALLOWED_DOMAINS,
+  DEFAULT_SYSTEM_PROMPTS_BY_LANG,
+  DEFAULT_WELCOME_BY_LANG,
+  type SupportedLanguage,
+} from '@askmink/shared';
 import { apiRequest } from '@/lib/api';
+import { getAgentTemplates, type AgentTemplateId } from '@/lib/workflow';
 import { cn } from '@/lib/utils';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
@@ -28,12 +34,6 @@ interface AgentOnboardingFlowProps {
   onCreated: (agent: any) => Promise<void> | void;
 }
 
-const DEFAULT_WELCOME_BY_LANG: Record<SupportedLanguage, string> = {
-  pt: 'Olá! Como posso ajudar você hoje?',
-  en: 'Hi! How can I help you today?',
-  es: '¡Hola! ¿Cómo puedo ayudarte hoy?',
-};
-
 export function AgentOnboardingFlow({
   mode,
   open = true,
@@ -47,6 +47,9 @@ export function AgentOnboardingFlow({
 }: AgentOnboardingFlowProps) {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
+  const [agentLang, setAgentLang] = useState<SupportedLanguage>(lang);
+  const [langTouched, setLangTouched] = useState(false);
+  const [goal, setGoal] = useState<AgentTemplateId>('custom');
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState('');
   const [nameInvalid, setNameInvalid] = useState(false);
@@ -58,9 +61,18 @@ export function AgentOnboardingFlow({
     if (!isVisible) return;
     setName('');
     setDescription('');
+    setAgentLang(lang);
+    setLangTouched(false);
+    setGoal('custom');
     setError('');
     setNameInvalid(false);
   }, [isVisible]);
+
+  useEffect(() => {
+    if (!langTouched) {
+      setAgentLang(lang);
+    }
+  }, [lang, langTouched]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -78,14 +90,30 @@ export function AgentOnboardingFlow({
     setError('');
     setNameInvalid(false);
 
+    const selectedTemplate = getAgentTemplates(agentLang).find((tpl) => tpl.id === goal);
+    const systemPrompt =
+      goal === 'custom'
+        ? DEFAULT_SYSTEM_PROMPTS_BY_LANG[agentLang]
+        : selectedTemplate?.systemPrompt || DEFAULT_SYSTEM_PROMPTS_BY_LANG[agentLang];
+    const welcomeMessage =
+      goal === 'custom'
+        ? DEFAULT_WELCOME_BY_LANG[agentLang]
+        : selectedTemplate?.welcomeMessage || DEFAULT_WELCOME_BY_LANG[agentLang];
+    const origin = typeof window !== 'undefined' ? window.location.origin : '';
+    const allowedDomains = Array.from(
+      new Set([origin, ...DEFAULT_ALLOWED_DOMAINS].filter(Boolean))
+    );
+
     try {
       const res = await apiRequest<{ item: any }>('/api/agents', {
         method: 'POST',
         body: {
           name: trimmedName,
           description: description.trim(),
-          defaultLanguage: lang,
-          welcomeMessage: DEFAULT_WELCOME_BY_LANG[lang],
+          defaultLanguage: agentLang,
+          systemPrompt,
+          welcomeMessage,
+          allowedDomains,
         },
       });
 
@@ -129,6 +157,80 @@ export function AgentOnboardingFlow({
             }
           }}
         />
+      </div>
+
+      <div className="space-y-1.5">
+        <Label id="onb-agent-lang-label">{t.onboardingAgentLangLabel}</Label>
+        <div
+          className="grid grid-cols-3 gap-2"
+          role="group"
+          aria-labelledby="onb-agent-lang-label"
+        >
+          {(
+            [
+              { code: 'pt' as const, label: t.langOptionPt },
+              { code: 'en' as const, label: t.langOptionEn },
+              { code: 'es' as const, label: t.langOptionEs },
+            ]
+          ).map((opt) => {
+            const active = agentLang === opt.code;
+            return (
+              <button
+                key={opt.code}
+                type="button"
+                aria-pressed={active}
+                onClick={() => {
+                  setAgentLang(opt.code);
+                  setLangTouched(true);
+                }}
+                className={cn(
+                  'px-2.5 py-2 rounded-lg border text-xs transition text-center cursor-pointer',
+                  active
+                    ? 'border-primary bg-primary/5 text-foreground font-semibold'
+                    : 'border-border bg-background text-muted-foreground hover:border-foreground/30 hover:text-foreground'
+                )}
+              >
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="space-y-1.5">
+        <Label id="onb-agent-goal-label">{t.onboardingGoalLabel}</Label>
+        <div
+          className="grid grid-cols-2 gap-2"
+          role="group"
+          aria-labelledby="onb-agent-goal-label"
+        >
+          {(
+            [
+              { id: 'custom' as const, label: t.onboardingGoalCustom },
+              { id: 'sales' as const, label: t.onboardingGoalSales },
+              { id: 'support' as const, label: t.onboardingGoalSupport },
+              { id: 'booking' as const, label: t.onboardingGoalBooking },
+            ]
+          ).map((opt) => {
+            const active = goal === opt.id;
+            return (
+              <button
+                key={opt.id}
+                type="button"
+                aria-pressed={active}
+                onClick={() => setGoal(opt.id)}
+                className={cn(
+                  'px-3 py-2 rounded-lg border text-xs transition text-left cursor-pointer leading-snug',
+                  active
+                    ? 'border-primary bg-primary/5 text-foreground font-semibold'
+                    : 'border-border bg-background text-muted-foreground hover:border-foreground/30 hover:text-foreground'
+                )}
+              >
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       <div className="space-y-1.5">

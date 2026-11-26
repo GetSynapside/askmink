@@ -19,13 +19,11 @@ import {
   workspaces,
 } from '@askmink/db';
 import type {
-  AgentMode,
   AIProvider,
   Citation,
   GenerativeUICard,
   MessagePart,
   SupportedLanguage,
-  UrlRule,
 } from '@askmink/shared';
 import type { AppConfig } from '../config.js';
 import type { CryptoService } from '../crypto/encryption.js';
@@ -39,28 +37,331 @@ import {
   verifyWidgetSessionJwt,
   type VerifiedSessionClaims,
 } from '../tools/index.js';
-import { createAtomicBooking, generateBookingIcs, getAvailableSlots } from '../schedule/index.js';
+import { BookingConflictError, createAtomicBooking, generateBookingIcs, getAvailableSlots } from '../schedule/index.js';
 
-export function matchUrlRule(pageUrl: string, rules: UrlRule[]): UrlRule | null {
-  let pathname = pageUrl;
-  try {
-    if (pageUrl.startsWith('http://') || pageUrl.startsWith('https://')) {
-      pathname = new URL(pageUrl).pathname;
+const LANGUAGE_DISPLAY_NAMES: Record<SupportedLanguage, string> = {
+  pt: 'Portuguese (pt-BR)',
+  es: 'Spanish (es)',
+  en: 'English (en)',
+};
+
+const PT_STRONG_TOKENS = new Set([
+  'voce', 'voces', 'nao', 'sao', 'estao', 'ola', 'oi', 'obrigado', 'obrigada',
+  'quero', 'qual', 'quais', 'posso', 'preciso', 'gostaria', 'tenho', 'temos',
+  'ajuda', 'ajudar', 'suporte', 'preco', 'precos', 'plano', 'planos',
+  'produto', 'produtos', 'chamado', 'tambem', 'entao', 'quanto', 'isso', 'isto',
+  'meu', 'minha', 'seu', 'sua', 'seus', 'suas', 'bom', 'boa', 'tudo', 'falar',
+  'atendimento', 'pagamento', 'assinatura', 'custa', 'onde', 'pelo', 'pela',
+  'dos', 'das', 'uma', 'uns', 'umas', 'pra', 'agora', 'cafeteira', 'moedor',
+  'xicaras', 'graos', 'faco', 'fazer', 'oferecem', 'vendem', 'conhecer', 'mostra',
+]);
+
+const ES_STRONG_TOKENS = new Set([
+  'hola', 'gracias', 'quiero', 'necesito', 'puedo', 'puedes', 'podria',
+  'cual', 'cuales', 'cuanto', 'cuesta', 'tengo', 'tenemos', 'tienes', 'tiene', 'tienen',
+  'ayuda', 'ayudar', 'soporte', 'precio', 'precios', 'producto', 'productos',
+  'planes', 'tambien', 'entonces', 'pero', 'buenos', 'buenas', 'dias',
+  'tardes', 'noches', 'usted', 'ustedes', 'nosotros', 'nuestro', 'nuestra',
+  'suscripcion', 'atencion', 'hablar', 'cita', 'reservar', 'reunion',
+  'informacion', 'muy', 'mas', 'sin', 'donde', 'ese', 'esa', 'quien',
+  'cuando', 'ahora', 'tarjeta', 'tarjetas',
+  'el', 'los', 'las', 'ofrecen', 'venden', 'muestra', 'conocer',
+]);
+
+const PT_ES_SHARED_TOKENS = new Set([
+  'comprar', 'como', 'sobre', 'agendar', 'horario', 'horarios',
+  'disponivel', 'disponiveis', 'disponible', 'disponibles',
+  'funciona', 'reembolso', 'cancelar', 'aqui', 'favor',
+]);
+
+const EN_STRONG_TOKENS = new Set([
+  'hello', 'hi', 'hey', 'thanks', 'thank', 'please', 'what', 'which',
+  'where', 'when', 'why', 'how', 'who', 'would', 'could', 'should', 'can',
+  'will', 'want', 'need', 'help', 'support', 'price', 'pricing', 'prices',
+  'product', 'products', 'buy', 'purchase', 'checkout', 'schedule', 'meeting',
+  'book', 'booking', 'ticket', 'broken', 'issue', 'error', 'tell', 'about',
+  'included', 'the', 'this', 'that', 'these', 'those', 'with', 'from', 'for',
+  'your', 'you', 'are', 'is', 'have', 'has', 'do', 'does', 'not',
+  'available', 'order', 'status', 'refund', 'subscription', 'account',
+  'explain', 'policy', 'confirm',
+]);
+
+export function detectMessageLanguage(text: string): SupportedLanguage | null {
+  const withoutUrls = text.replace(/https?:\/\/\S+/gi, ' ').trim();
+  if (withoutUrls.length < 2) return null;
+
+  let pt = 0;
+  let es = 0;
+  let en = 0;
+
+  if (/[ãõç]/i.test(withoutUrls)) pt += 3;
+  if (/[âêô]/i.test(withoutUrls)) pt += 2;
+  if (/[ñ¿¡]/i.test(withoutUrls)) es += 3;
+
+  const normalized = withoutUrls
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+  const tokens = normalized.match(/[a-z0-9]+/g) ?? [];
+
+  for (const tok of tokens) {
+    if (PT_STRONG_TOKENS.has(tok)) pt += 2;
+    if (ES_STRONG_TOKENS.has(tok)) es += 2;
+    if (PT_ES_SHARED_TOKENS.has(tok)) {
+      pt += 1;
+      es += 1;
     }
-  } catch {
-    pathname = pageUrl;
+    if (EN_STRONG_TOKENS.has(tok)) en += 2;
   }
 
-  for (const rule of rules) {
-    const escaped = rule.pattern
-      .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
-      .replace(/\*/g, '.*');
-    const regex = new RegExp(`^${escaped}$`, 'i');
-    if (regex.test(pathname)) {
-      return rule;
-    }
+  const scores: Array<{ lang: SupportedLanguage; score: number }> = [
+    { lang: 'en', score: en },
+    { lang: 'pt', score: pt },
+    { lang: 'es', score: es },
+  ];
+  scores.sort((a, b) => b.score - a.score);
+  const top = scores[0];
+  const second = scores[1];
+  if (!top || !second) return null;
+  if (top.score >= 2 && top.score > second.score) {
+    return top.lang;
   }
   return null;
+}
+
+export function normalizeCatalogText(text: string): string {
+  return text.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+}
+
+const PRODUCT_STOP_WORDS = new Set([
+  'de', 'da', 'do', 'das', 'dos', 'em', 'no', 'na', 'nos', 'nas', 'para', 'pra',
+  'por', 'com', 'sem', 'um', 'uma', 'uns', 'umas', 'ao', 'aos', 'ou', 'as', 'os', 'sao', 'estao',
+  'el', 'la', 'lo', 'los', 'las', 'un', 'una', 'unos', 'unas', 'del', 'al', 'con', 'sin', 'en', 'son', 'estan',
+  'se', 'me', 'te', 'les', 'eu', 'tu', 'su', 'mi', 'le', 'si', 'ya', 'ja',
+  'the', 'an', 'of', 'to', 'in', 'on', 'at', 'for', 'and', 'or', 'is', 'are', 'am', 'be', 'was', 'were',
+  'by', 'if', 'it', 'my', 'no', 'so', 'up', 'us',
+  'do', 'does', 'did', 'can', 'could', 'would', 'should', 'will', 'have', 'has', 'had',
+  'you', 'your', 'we', 'our', 'they', 'their', 'this', 'that', 'these', 'those', 'some', 'any',
+  'want', 'need', 'buy', 'purchase', 'checkout', 'get', 'show', 'see', 'tell', 'list', 'find', 'offer', 'sell',
+  'about', 'what', 'which', 'how', 'much', 'many', 'where', 'when', 'recommend', 'please', 'hi', 'hello', 'thanks',
+  'quero', 'preciso', 'gostaria', 'comprar', 'ver', 'mostrar', 'mostra', 'mostre', 'conhecer', 'saber', 'existem', 'diga',
+  'oferece', 'oferecem', 'oferecer', 'vende', 'vendem', 'vender',
+  'quais', 'qual', 'como', 'onde', 'quando',
+  'quanto', 'custa', 'custam', 'tem', 'temos', 'esse', 'essa', 'esses', 'essas', 'este', 'esta', 'estes', 'estas',
+  'isso', 'isto', 'meu', 'minha', 'meus', 'minhas', 'seu', 'sua', 'seus', 'suas', 'sobre',
+  'voce', 'voces', 'pode', 'poderia', 'posso', 'indicar', 'sugerir', 'recomendar', 'ola', 'oi', 'obrigado', 'obrigada', 'favor',
+  'quiero', 'necesito', 'cual', 'cuales', 'cuanto', 'cuantos', 'cuesta', 'cuestan', 'tiene', 'tienen',
+  'tengo', 'hay', 'que', 'usted', 'ustedes', 'puedo', 'puedes', 'puede', 'hola', 'gracias', 'pero',
+  'ofrece', 'ofrecen', 'ofrecer', 'venden', 'muestra', 'muestrame', 'conocer', 'existen', 'ensena', 'ensename', 'ensenar', 'dime',
+]);
+
+const BROAD_CATALOG_TERMS = new Set([
+  'produto', 'produtos', 'producto', 'productos', 'product', 'products',
+  'plano', 'planos', 'plan', 'plans', 'planes',
+  'catalogo', 'catalog', 'catalogue', 'item', 'items', 'itens',
+  'opcao', 'opcoes', 'opcion', 'opciones', 'option', 'options',
+  'preco', 'precos', 'price', 'prices', 'pricing', 'precio', 'precios',
+  'todos', 'todas', 'all', 'tudo', 'todo',
+  'disponivel', 'disponiveis', 'available', 'disponible', 'disponibles',
+  'servico', 'servicos', 'service', 'services', 'servicio', 'servicios',
+]);
+
+function tokenizeCatalogWords(text: string): string[] {
+  const matches = normalizeCatalogText(text).match(/[a-z0-9]+/g) ?? [];
+  return Array.from(new Set(matches.filter((t) => t.length >= 2)));
+}
+
+function wordMatchesToken(word: string, tok: string): boolean {
+  if (word === tok) return true;
+  if (Math.min(word.length, tok.length) >= 4) {
+    return word.startsWith(tok) || tok.startsWith(word);
+  }
+  return false;
+}
+
+export interface CatalogProductItem {
+  id: string;
+  name: string;
+  description: string;
+  priceLabel: string;
+  checkoutUrl: string;
+  badge: string;
+}
+
+export interface RecommendProductsParams {
+  products: CatalogProductItem[];
+  query?: string;
+  productId?: string;
+  productIds?: string[];
+  recommendedProductIds: Set<string>;
+  cards: GenerativeUICard[];
+  toolTraceLog: Array<Record<string, unknown>>;
+  maxResults?: number;
+}
+
+export interface RecommendProductsResult {
+  found: boolean;
+  products: Array<{ id: string; name: string; priceLabel: string; badge?: string }>;
+  emittedCardsCount: number;
+  availableProducts: Array<{ id: string; name: string; priceLabel: string }>;
+}
+
+export function recommendProductsFromCatalog(
+  params: RecommendProductsParams
+): RecommendProductsResult {
+  const {
+    products: catalog,
+    query,
+    productId,
+    productIds,
+    recommendedProductIds,
+    cards,
+    toolTraceLog,
+    maxResults = 5,
+  } = params;
+
+  const availableProducts = catalog.slice(0, 10).map((p) => ({
+    id: p.id,
+    name: p.name,
+    priceLabel: p.priceLabel,
+  }));
+
+  if (catalog.length === 0) {
+    toolTraceLog.push({
+      tool: 'recommend_product',
+      query,
+      productId,
+      productIds,
+      matchedIds: [],
+      emittedCount: 0,
+    });
+    return {
+      found: false,
+      products: [],
+      emittedCardsCount: 0,
+      availableProducts,
+    };
+  }
+
+  const explicitIds: string[] = [];
+  if (productId && productId.trim()) {
+    explicitIds.push(productId.trim());
+  }
+  if (Array.isArray(productIds)) {
+    for (const id of productIds) {
+      const trimmed = id.trim();
+      if (trimmed && !explicitIds.includes(trimmed)) {
+        explicitIds.push(trimmed);
+      }
+    }
+  }
+
+  let matched: CatalogProductItem[] = [];
+  if (explicitIds.length > 0) {
+    matched = explicitIds
+      .map((id) => catalog.find((p) => p.id === id))
+      .filter((p): p is CatalogProductItem => Boolean(p))
+      .slice(0, maxResults);
+  }
+
+  if (matched.length === 0 && (explicitIds.length === 0 || (query && query.trim().length > 0))) {
+    const rawTokens = tokenizeCatalogWords(query ?? '').filter((t) => !PRODUCT_STOP_WORDS.has(t));
+    const specificTokens = rawTokens.filter((t) => !BROAD_CATALOG_TERMS.has(t));
+
+    if (rawTokens.length === 0 || specificTokens.length === 0) {
+      if (explicitIds.length === 0) {
+        matched = catalog.slice(0, maxResults);
+      }
+    } else {
+      const scored: Array<{
+        product: CatalogProductItem;
+        matchedTokenCount: number;
+        score: number;
+      }> = [];
+
+      for (const p of catalog) {
+        const nameWords = tokenizeCatalogWords(p.name);
+        const badgeWords = tokenizeCatalogWords(p.badge);
+        const descWords = tokenizeCatalogWords(p.description);
+        let matchedTokenCount = 0;
+        let score = 0;
+
+        for (const tok of specificTokens) {
+          const inName = nameWords.some((w) => wordMatchesToken(w, tok));
+          const inBadge = badgeWords.some((w) => wordMatchesToken(w, tok));
+          const inDesc = descWords.some((w) => wordMatchesToken(w, tok));
+          if (inName || inBadge || inDesc) {
+            matchedTokenCount += 1;
+            if (inName) score += 3;
+            if (inBadge) score += 2;
+            if (inDesc) score += 1;
+          }
+        }
+
+        if (matchedTokenCount > 0) {
+          scored.push({ product: p, matchedTokenCount, score });
+        }
+      }
+
+      scored.sort((a, b) => b.matchedTokenCount - a.matchedTokenCount || b.score - a.score);
+      matched = scored.slice(0, maxResults).map((s) => s.product);
+    }
+  }
+
+  if (matched.length === 0) {
+    toolTraceLog.push({
+      tool: 'recommend_product',
+      query,
+      productId,
+      productIds,
+      matchedIds: [],
+      emittedCount: 0,
+    });
+    return {
+      found: false,
+      products: [],
+      emittedCardsCount: 0,
+      availableProducts,
+    };
+  }
+
+  let emittedCardsCount = 0;
+  for (const prod of matched) {
+    if (!recommendedProductIds.has(prod.id)) {
+      recommendedProductIds.add(prod.id);
+      cards.push({
+        type: 'product_card',
+        productId: prod.id,
+        name: prod.name,
+        description: prod.description,
+        priceLabel: prod.priceLabel,
+        checkoutUrl: prod.checkoutUrl,
+        badge: prod.badge || undefined,
+      });
+      emittedCardsCount += 1;
+    }
+  }
+
+  toolTraceLog.push({
+    tool: 'recommend_product',
+    query,
+    productId,
+    productIds,
+    matchedIds: matched.map((p) => p.id),
+    emittedCount: emittedCardsCount,
+  });
+
+  return {
+    found: true,
+    products: matched.map((p) => ({
+      id: p.id,
+      name: p.name,
+      priceLabel: p.priceLabel,
+      badge: p.badge || undefined,
+    })),
+    emittedCardsCount,
+    availableProducts,
+  };
 }
 
 export interface ChatTurnInput {
@@ -79,7 +380,6 @@ export interface ChatTurnInput {
 export interface ChatTurnResult {
   conversationId: string;
   messageId: string;
-  mode: AgentMode;
   language: SupportedLanguage;
   text: string;
   parts: MessagePart[];
@@ -88,7 +388,6 @@ export interface ChatTurnResult {
   trace: {
     id: string;
     model: string;
-    mode: AgentMode;
     ragChunks: Array<Record<string, unknown>>;
     toolCalls: Array<Record<string, unknown>>;
     latencyMs: number;
@@ -173,10 +472,9 @@ export class AgentOrchestrator {
       throw new Error('Agent not found');
     }
 
-    const matchedRule = matchUrlRule(input.pageUrl || '/', agent.urlRules ?? []);
-    const mode: AgentMode = matchedRule?.mode ?? 'sales';
+    const detectedLanguage = detectMessageLanguage(input.message);
     const language: SupportedLanguage =
-      input.language ?? (agent.defaultLanguage as SupportedLanguage) ?? 'en';
+      detectedLanguage ?? input.language ?? (agent.defaultLanguage as SupportedLanguage) ?? 'en';
 
     // Verify optional widget visitor JWT (strict HS256 + exp)
     let sessionClaims: VerifiedSessionClaims | null = null;
@@ -208,7 +506,6 @@ export class AgentOrchestrator {
         .values({
           workspaceId: agent.workspaceId,
           agentId: agent.id,
-          mode,
           language,
           pageUrl: input.pageUrl || '/',
           visitorEmail:
@@ -245,7 +542,15 @@ export class AgentOrchestrator {
       topK: 5,
     });
 
+    const citationIndexBySource = new Map<string, number>();
+    for (const cit of rag.citations) {
+      if (typeof cit.index === 'number') {
+        citationIndexBySource.set(cit.sourceId, cit.index);
+      }
+    }
+
     const cards: GenerativeUICard[] = [];
+    const recommendedProductIds = new Set<string>();
     const toolTraceLog: Array<Record<string, unknown>> = [];
 
     // Load agent products, custom HTTP tools, and MCP servers
@@ -268,12 +573,30 @@ export class AgentOrchestrator {
     if (chatCreds.provider === 'mock') {
       // Deterministic orchestrator path for offline E2E verification (real RAG, real tools, real cards!)
       const lower = input.message.toLowerCase();
+      const normalizedLower = normalizeCatalogText(input.message);
+      const isProductIntent =
+        /\b(buy|price|pricing|plan|plans|plano|planos|planes|checkout|comprar|preco|precos|produto|produtos|producto|productos|product|products|precio|precios|catalogo|catalog|catalogue|recomenda\w*|recommend\w*|custa|cuesta)\b/.test(
+          normalizedLower
+        );
 
-      if (lower.includes('schedule') || lower.includes('agend') || lower.includes('meeting') || lower.includes('horário')) {
+      if (
+        lower.includes('schedule') ||
+        lower.includes('agend') ||
+        lower.includes('meeting') ||
+        lower.includes('horário') ||
+        lower.includes('horario') ||
+        lower.includes('cita') ||
+        lower.includes('reuni')
+      ) {
         const slots = await getAvailableSlots({ db: this.db, agentId: agent.id, daysAhead: 7 });
         cards.push({
           type: 'booking_slots',
-          title: language === 'pt' ? 'Horários disponíveis' : 'Available time slots',
+          title:
+            language === 'pt'
+              ? 'Horários disponíveis'
+              : language === 'es'
+                ? 'Horarios disponibles'
+                : 'Available time slots',
           timezone: slots[0]?.timezone ?? 'UTC',
           slots: slots.slice(0, 6).map(({ startsAt, endsAt, label }) => ({ startsAt, endsAt, label })),
         });
@@ -281,24 +604,47 @@ export class AgentOrchestrator {
         assistantText =
           language === 'pt'
             ? 'Aqui estão os próximos horários disponíveis para agendar uma conversa.'
-            : 'Here are the next available time slots to schedule a meeting.';
-      } else if ((lower.includes('buy') || lower.includes('price') || lower.includes('plan') || lower.includes('checkout') || lower.includes('comprar') || lower.includes('preço')) && agentProducts.length > 0) {
-        const prod = agentProducts[0]!;
-        cards.push({
-          type: 'product_card',
-          productId: prod.id,
-          name: prod.name,
-          description: prod.description,
-          priceLabel: prod.priceLabel,
-          checkoutUrl: prod.checkoutUrl,
-          badge: prod.badge || undefined,
+            : language === 'es'
+              ? 'Aquí tienes los próximos horarios disponibles para agendar una reunión.'
+              : 'Here are the next available time slots to schedule a meeting.';
+      } else if (isProductIntent && agentProducts.length > 0) {
+        const rec = recommendProductsFromCatalog({
+          products: agentProducts,
+          query: input.message,
+          recommendedProductIds,
+          cards,
+          toolTraceLog,
         });
-        toolTraceLog.push({ tool: 'recommend_product', productId: prod.id });
-        assistantText =
-          language === 'pt'
-            ? `Recomendo o plano **${prod.name}** (${prod.priceLabel}). Você pode finalizar direto pelo card abaixo.`
-            : `I recommend **${prod.name}** (${prod.priceLabel}). You can proceed directly via the checkout card below.`;
-      } else if (lower.includes('ticket') || lower.includes('chamado') || lower.includes('bug') || lower.includes('broken')) {
+        if (!rec.found || rec.products.length === 0) {
+          assistantText =
+            language === 'pt'
+              ? 'Não encontrei um produto exato com esse nome no catálogo ativo. Posso mostrar os itens disponíveis se desejar.'
+              : language === 'es'
+                ? 'No encontré un producto exacto con ese nombre en el catálogo activo. Puedo mostrarte los artículos disponibles si lo deseas.'
+                : 'I could not find an exact matching product in the active catalog. Let me know if you would like to see our available options.';
+        } else if (rec.products.length === 1) {
+          const prod = rec.products[0]!;
+          assistantText =
+            language === 'pt'
+              ? `Recomendo **${prod.name}** (${prod.priceLabel}). Você pode finalizar direto pelo card abaixo.`
+              : language === 'es'
+                ? `Te recomiendo **${prod.name}** (${prod.priceLabel}). Puedes continuar directamente con la tarjeta de abajo.`
+                : `I recommend **${prod.name}** (${prod.priceLabel}). You can proceed directly via the checkout card below.`;
+        } else {
+          const names = rec.products.map((p) => `**${p.name}** (${p.priceLabel})`).join(', ');
+          assistantText =
+            language === 'pt'
+              ? `Encontrei estas opções para você: ${names}. Você pode finalizar pelos cards abaixo.`
+              : language === 'es'
+                ? `Encontré estas opciones para ti: ${names}. Puedes continuar con las tarjetas de abajo.`
+                : `I found these options for you: ${names}. You can proceed via the checkout cards below.`;
+        }
+      } else if (
+        lower.includes('ticket') ||
+        lower.includes('chamado') ||
+        lower.includes('bug') ||
+        lower.includes('broken')
+      ) {
         const visitorEmail =
           (typeof sessionClaims?.email === 'string' && sessionClaims.email) ||
           (typeof input.context?.email === 'string' && input.context.email) ||
@@ -311,7 +657,7 @@ export class AgentOrchestrator {
             conversationId,
             visitorEmail,
             subject: input.message.slice(0, 100),
-            summary: `Auto-generated support ticket in ${mode} mode: ${input.message}`,
+            summary: `Auto-generated support ticket: ${input.message}`,
             priority: 'medium',
             status: 'open',
           })
@@ -344,7 +690,9 @@ export class AgentOrchestrator {
         assistantText =
           language === 'pt'
             ? `Abri o chamado #${ticket!.id.slice(0, 8)} para nossa equipe de suporte.`
-            : `I have opened support ticket #${ticket!.id.slice(0, 8)} for our team.`;
+            : language === 'es'
+              ? `Abrí el ticket #${ticket!.id.slice(0, 8)} para nuestro equipo de soporte.`
+              : `I have opened support ticket #${ticket!.id.slice(0, 8)} for our team.`;
       } else {
         // Check if message mentions a configured custom HTTP tool name
         const matchedTool = agentTools.find((t) => lower.includes(t.name.toLowerCase()));
@@ -359,7 +707,12 @@ export class AgentOrchestrator {
               args: input.context ?? {},
             });
             toolTraceLog.push({ tool: matchedTool.name, status: 'awaiting_confirmation' });
-            assistantText = `Please confirm before I execute **${matchedTool.name}**.`;
+            assistantText =
+              language === 'pt'
+                ? `Por favor, confirme antes de eu executar **${matchedTool.name}**.`
+                : language === 'es'
+                  ? `Por favor, confirma antes de que ejecute **${matchedTool.name}**.`
+                  : `Please confirm before I execute **${matchedTool.name}**.`;
           } else {
             const decryptedHeaders = matchedTool.headersEncrypted
               ? this.crypto.decryptJson<Record<string, string>>(matchedTool.headersEncrypted)
@@ -385,16 +738,29 @@ export class AgentOrchestrator {
               status: execRes.status,
               durationMs: execRes.durationMs,
             });
-            assistantText = `Executed **${matchedTool.name}** (HTTP ${execRes.status}).`;
+            assistantText =
+              language === 'pt'
+                ? `Executei **${matchedTool.name}** (HTTP ${execRes.status}).`
+                : language === 'es'
+                  ? `Ejecuté **${matchedTool.name}** (HTTP ${execRes.status}).`
+                  : `Executed **${matchedTool.name}** (HTTP ${execRes.status}).`;
           }
         } else if (rag.chunks.length > 0) {
           const best = rag.chunks[0]!;
-          assistantText = `Based on "${best.title}": ${best.content.slice(0, 420)}`;
+          const citIdx = citationIndexBySource.get(best.sourceId) ?? 1;
+          assistantText =
+            language === 'pt'
+              ? `Com base em "${best.title}" [${citIdx}]: ${best.content.slice(0, 420)}`
+              : language === 'es'
+                ? `Según "${best.title}" [${citIdx}]: ${best.content.slice(0, 420)}`
+                : `Based on "${best.title}" [${citIdx}]: ${best.content.slice(0, 420)}`;
         } else {
           assistantText =
-            mode === 'support'
-              ? `[Support Mode] I received your question: "${input.message}".`
-              : `[Sales Mode] Thanks for reaching out! How can I help with "${input.message}"?`;
+            language === 'pt'
+              ? `Olá! Recebi sua mensagem: "${input.message}". Como posso ajudar?`
+              : language === 'es'
+                ? `¡Hola! Recibí tu mensaje: "${input.message}". ¿Cómo puedo ayudarte?`
+                : `Hi! I received your message: "${input.message}". How can I help?`;
         }
       }
       estimatedTokens += Math.ceil(assistantText.length / 4) + rag.chunks.length * 120;
@@ -409,21 +775,29 @@ export class AgentOrchestrator {
 
       const ragContextBlock =
         rag.chunks.length > 0
-          ? `\n\n## Retrieved Knowledge Base Context (cite sources in your answer):\n${rag.chunks
-              .map((c, idx) => `[${idx + 1}] ${c.title}${c.url ? ` (${c.url})` : ''}:\n${c.content}`)
+          ? `\n\n## Retrieved Knowledge Base Context (cite sources using [N] matching the source number below):\n${rag.chunks
+              .map((c, idx) => {
+                const citationIndex = citationIndexBySource.get(c.sourceId) ?? idx + 1;
+                return `[${citationIndex}] ${c.title}${c.url ? ` (${c.url})` : ''}:\n${c.content}`;
+              })
               .join('\n\n')}`
           : '';
 
-      const modeInstruction =
-        mode === 'sales'
-          ? 'Current Mode: SALES. Focus on answering commercial questions, handling objections, recommending products with checkout cards, capturing leads, and scheduling demos.'
-          : 'Current Mode: SUPPORT. Focus on accurate technical answers citing documentation, running diagnostic tools, and opening support tickets when needed.';
+      const catalogSummaryBlock =
+        agentProducts.length > 0
+          ? `## Active Product Catalog (${agentProducts.length} active ${agentProducts.length === 1 ? 'item' : 'items'} — call recommend_product with productId, productIds, or query to render checkout cards):\n${agentProducts
+              .slice(0, 25)
+              .map(
+                (p) =>
+                  `- id="${p.id}" | name="${p.name}" | price="${p.priceLabel}"${p.badge ? ` | badge="${p.badge}"` : ''} | description="${p.description.slice(0, 140)}"`
+              )
+              .join('\n')}`
+          : '';
 
       const systemPrompt = [
         agent.systemPrompt,
-        modeInstruction,
-        matchedRule?.promptOverride ? `URL Rule Override: ${matchedRule.promptOverride}` : '',
-        `Respond in language: ${language}.`,
+        `CRITICAL LANGUAGE INSTRUCTION: Always respond in ${LANGUAGE_DISPLAY_NAMES[language]}. Match the user's language in this turn (${LANGUAGE_DISPLAY_NAMES[language]}) even if knowledge base chunks or product catalog entries are written in another language.`,
+        catalogSummaryBlock,
         input.context && Object.keys(input.context).length > 0
           ? `Page context: ${JSON.stringify(input.context)}`
           : '',
@@ -440,7 +814,12 @@ export class AgentOrchestrator {
             const slots = await getAvailableSlots({ db: this.db, agentId: agent.id, daysAhead });
             cards.push({
               type: 'booking_slots',
-              title: language === 'pt' ? 'Horários disponíveis' : 'Available time slots',
+              title:
+                language === 'pt'
+                  ? 'Horários disponíveis'
+                  : language === 'es'
+                    ? 'Horarios disponibles'
+                    : 'Available time slots',
               timezone: slots[0]?.timezone ?? 'UTC',
               slots: slots.slice(0, 8).map(({ startsAt, endsAt, label }) => ({ startsAt, endsAt, label })),
             });
@@ -458,17 +837,26 @@ export class AgentOrchestrator {
             notes: z.string().optional(),
           }),
           execute: async (args) => {
-            const booking = await createAtomicBooking(this.db, {
-              workspaceId: agent.workspaceId,
-              agentId: agent.id,
-              conversationId,
-              visitorName: args.visitorName,
-              visitorEmail: args.visitorEmail,
-              startsAt: new Date(args.startsAt),
-              endsAt: new Date(args.endsAt),
-              timezone: 'UTC',
-              notes: args.notes,
-            });
+            let booking;
+            try {
+              booking = await createAtomicBooking(this.db, {
+                workspaceId: agent.workspaceId,
+                agentId: agent.id,
+                conversationId,
+                visitorName: args.visitorName,
+                visitorEmail: args.visitorEmail,
+                startsAt: new Date(args.startsAt),
+                endsAt: new Date(args.endsAt),
+                timezone: 'UTC',
+                notes: args.notes,
+              });
+            } catch (err) {
+              if (err instanceof BookingConflictError) {
+                toolTraceLog.push({ tool: 'book_meeting', conflict: true, error: err.message });
+                return { ok: false, code: 'BOOKING_CONFLICT', error: err.message };
+              }
+              throw err;
+            }
             const ics = generateBookingIcs({
               id: booking.id,
               agentName: agent.name,
@@ -516,27 +904,23 @@ export class AgentOrchestrator {
           },
         }),
         recommend_product: aiTool({
-          description: 'Show a product or pricing plan checkout card to the visitor.',
-          parameters: z.object({ query: z.string().optional() }),
-          execute: async ({ query }) => {
-            const q = (query ?? '').toLowerCase();
-            const matched =
-              agentProducts.find(
-                (p) => p.name.toLowerCase().includes(q) || p.description.toLowerCase().includes(q)
-              ) ?? agentProducts[0];
-            if (!matched) return { found: false };
-            cards.push({
-              type: 'product_card',
-              productId: matched.id,
-              name: matched.name,
-              description: matched.description,
-              priceLabel: matched.priceLabel,
-              checkoutUrl: matched.checkoutUrl,
-              badge: matched.badge || undefined,
-            });
-            toolTraceLog.push({ tool: 'recommend_product', productId: matched.id });
-            return { found: true, product: { id: matched.id, name: matched.name, priceLabel: matched.priceLabel } };
-          },
+          description:
+            'Show one or more active product or pricing plan checkout cards to the visitor. Prefer productId/productIds from the Active Product Catalog when known, or pass a search query.',
+          parameters: z.object({
+            query: z.string().optional(),
+            productId: z.string().optional(),
+            productIds: z.array(z.string()).max(10).optional(),
+          }),
+          execute: async ({ query, productId, productIds }) =>
+            recommendProductsFromCatalog({
+              products: agentProducts,
+              query,
+              productId,
+              productIds,
+              recommendedProductIds,
+              cards,
+              toolTraceLog,
+            }),
         }),
         capture_lead: aiTool({
           description: 'Save visitor contact info (name/email) as a sales lead.',
@@ -757,10 +1141,11 @@ export class AgentOrchestrator {
         agentId: agent.id,
         conversationId,
         messageId: assistantMsg!.id,
-        mode,
         model: chatCreds.model,
         ragChunks: rag.chunks.map((c) => ({
           id: c.id,
+          sourceId: c.sourceId,
+          citationIndex: citationIndexBySource.get(c.sourceId),
           title: c.title,
           url: c.url,
           rrfScore: c.rrfScore,
@@ -795,7 +1180,6 @@ export class AgentOrchestrator {
     return {
       conversationId,
       messageId: assistantMsg!.id,
-      mode,
       language,
       text: assistantText,
       parts,
@@ -804,7 +1188,6 @@ export class AgentOrchestrator {
       trace: {
         id: traceRow!.id,
         model: chatCreds.model,
-        mode,
         ragChunks: traceRow!.ragChunks,
         toolCalls: traceRow!.toolCalls,
         latencyMs,

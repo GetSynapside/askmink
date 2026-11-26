@@ -3,6 +3,7 @@ import {
   BookOpen,
   Calendar,
   CheckCircle2,
+  ChevronDown,
   Clock,
   Cpu,
   Download,
@@ -12,8 +13,10 @@ import {
   Inbox,
   KeyRound,
   LifeBuoy,
+  Loader2,
   Mail,
   MessageSquare,
+  Pencil,
   Play,
   Plus,
   Search,
@@ -32,12 +35,36 @@ import {
 import type { SupportedLanguage } from '@askmink/shared';
 import { apiRequest } from '@/lib/api';
 import { cn } from '@/lib/utils';
+import { isSafeHttpUrl } from '@/components/SafeMarkdown';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
+import { Button, buttonVariants } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '@/components/ui/collapsible';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
@@ -96,11 +123,37 @@ function EmptyState({
   );
 }
 
+const PENDING_KB_STATUSES = new Set(['pending', 'processing', 'indexing', 'queued']);
+
 function getKnowledgeStatusVariant(status: string): 'success' | 'destructive' | 'warning' | 'secondary' {
   if (status === 'ready') return 'success';
   if (status === 'failed' || status === 'error') return 'destructive';
-  if (status === 'pending' || status === 'indexing' || status === 'queued') return 'warning';
+  if (PENDING_KB_STATUSES.has(status)) return 'warning';
   return 'secondary';
+}
+
+function formatKnowledgeType(type: string, t?: Record<string, string>): string {
+  switch (type) {
+    case 'text':
+      return t?.knowledgeTypeText || 'Text';
+    case 'file':
+      return t?.knowledgeTypeFile || 'File';
+    case 'url':
+      return t?.knowledgeTypeUrl || 'URL';
+    case 'sitemap':
+      return t?.knowledgeTypeSitemap || 'Sitemap';
+    case 'llms_txt':
+      return t?.knowledgeTypeLlmsTxt || 'llms.txt';
+    default:
+      return type;
+  }
+}
+
+function formatKnowledgeStatus(status: string, t?: Record<string, string>): string {
+  if (status === 'ready') return t?.knowledgeStatusReady || 'Ready';
+  if (PENDING_KB_STATUSES.has(status)) return t?.knowledgeStatusIndexing || 'Indexing...';
+  if (status === 'failed' || status === 'error') return t?.knowledgeStatusError || 'Error';
+  return status;
 }
 
 function getConversationStatusVariant(status: string): 'success' | 'destructive' | 'info' | 'secondary' {
@@ -231,9 +284,6 @@ export function InboxView({
                       <span className="text-xs font-medium text-foreground truncate">
                         {c.visitorEmail || c.pageUrl || '/'}
                       </span>
-                      <Badge variant="secondary" className="text-[10px] capitalize shrink-0">
-                        {c.mode}
-                      </Badge>
                     </div>
                     <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
                       <span className="tabular-nums">
@@ -299,9 +349,6 @@ export function InboxView({
                   </div>
                 </div>
                 <div className="flex items-center gap-1.5 shrink-0">
-                  <Badge variant="outline" className="capitalize">
-                    {selected.conversation.mode}
-                  </Badge>
                   <Badge variant={getConversationStatusVariant(selected.conversation.status)}>
                     {selected.conversation.status}
                   </Badge>
@@ -381,15 +428,107 @@ export function KnowledgeView({
   const [content, setContent] = useState('');
   const [url, setUrl] = useState('');
   const [crawlType, setCrawlType] = useState<'url' | 'sitemap' | 'llms_txt'>('url');
-  const [notice, setNotice] = useState<{ type: 'info' | 'err'; text: string } | null>(null);
+  const [notice, setNotice] = useState<{ type: 'info' | 'ok' | 'err'; text: string } | null>(null);
+
+  const [editingSource, setEditingSource] = useState<any | null>(null);
+  const [editTitle, setEditTitle] = useState('');
+  const [editContent, setEditContent] = useState('');
+  const [editSourceUrl, setEditSourceUrl] = useState('');
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
+
+  const [sourcePendingDelete, setSourcePendingDelete] = useState<any | null>(null);
+  const [deletingSource, setDeletingSource] = useState(false);
 
   async function refresh() {
     const r = await apiRequest(`/api/agents/${agent.id}/knowledge`);
     setItems(r.items || []);
   }
+
   useEffect(() => {
-    refresh();
+    refresh().catch(() => undefined);
   }, [agent.id]);
+
+  const readyCount = items.filter((s) => s.status === 'ready').length;
+  const pendingCount = items.filter((s) => PENDING_KB_STATUSES.has(s.status)).length;
+
+  useEffect(() => {
+    if (pendingCount === 0) return;
+    const timer = window.setInterval(() => {
+      refresh().catch(() => undefined);
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [agent.id, pendingCount]);
+
+  function openEditSource(s: any) {
+    setEditingSource(s);
+    setEditTitle(s.title || '');
+    setEditContent(s.rawContent || '');
+    setEditSourceUrl(s.sourceUrl || '');
+    setEditError(null);
+  }
+
+  async function handleSaveEdit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!editingSource || savingEdit) return;
+    setSavingEdit(true);
+    setEditError(null);
+    try {
+      const body: Record<string, string> = {
+        title: editTitle.trim(),
+      };
+      if (editingSource.type === 'text') {
+        body.content = editContent.trim();
+        body.sourceUrl = editSourceUrl.trim();
+      } else if (
+        editingSource.type === 'url' ||
+        editingSource.type === 'sitemap' ||
+        editingSource.type === 'llms_txt'
+      ) {
+        const trimmedUrl = editSourceUrl.trim();
+        if (trimmedUrl) {
+          body.sourceUrl = trimmedUrl;
+        }
+      }
+
+      await apiRequest(`/api/agents/${agent.id}/knowledge/${editingSource.id}`, {
+        method: 'PATCH',
+        body,
+      });
+      setEditingSource(null);
+      setNotice({
+        type: 'ok',
+        text:
+          t?.knowledgeUpdatedMsg || 'Knowledge source updated and queued for re-indexing.',
+      });
+      await refresh().catch(() => undefined);
+    } catch (err) {
+      setEditError((err as Error).message);
+    } finally {
+      setSavingEdit(false);
+    }
+  }
+
+  async function handleConfirmDelete() {
+    if (!sourcePendingDelete || deletingSource) return;
+    setDeletingSource(true);
+    try {
+      await apiRequest(`/api/agents/${agent.id}/knowledge/${sourcePendingDelete.id}`, {
+        method: 'DELETE',
+      });
+      setSourcePendingDelete(null);
+      setNotice({
+        type: 'ok',
+        text: t?.knowledgeDeletedMsg || 'Knowledge source deleted.',
+      });
+      await refresh().catch(() => undefined);
+    } catch (err) {
+      setSourcePendingDelete(null);
+      setNotice({ type: 'err', text: (err as Error).message });
+    } finally {
+      setDeletingSource(false);
+    }
+  }
 
   async function addText(e: React.FormEvent) {
     e.preventDefault();
@@ -455,15 +594,9 @@ export function KnowledgeView({
         {/* Page Header */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div className="min-w-0">
-            <div className="flex items-center gap-2.5 flex-wrap">
-              <h1 className="text-xl font-semibold text-foreground tracking-tight">
-                {t?.knowledgeTitle || 'Knowledge Base'}
-              </h1>
-              <Badge variant="secondary" className="font-mono text-[11px] gap-1">
-                <Cpu className="size-3" aria-hidden="true" />
-                <span>{agent.embeddingModel}</span>
-              </Badge>
-            </div>
+            <h1 className="text-xl font-semibold text-foreground tracking-tight">
+              {t?.knowledgeTitle || 'Knowledge Base'}
+            </h1>
             <p className="text-xs text-muted-foreground mt-1">
               {t?.knowledgeSubtitle ||
                 'Index documentation, websites, and FAQs for Hybrid RAG retrieval.'}
@@ -487,8 +620,21 @@ export function KnowledgeView({
         </div>
 
         {notice && (
-          <Alert variant={notice.type === 'err' ? 'destructive' : 'info'}>
+          <Alert
+            variant={
+              notice.type === 'err' ? 'destructive' : notice.type === 'ok' ? 'success' : 'info'
+            }
+            className="flex items-center justify-between gap-3"
+          >
             <AlertDescription>{notice.text}</AlertDescription>
+            <button
+              type="button"
+              onClick={() => setNotice(null)}
+              aria-label={t?.closeNotice || 'Dismiss notice'}
+              className="shrink-0 rounded-md p-1 opacity-70 hover:opacity-100 hover:bg-black/5 transition cursor-pointer"
+            >
+              <X className="size-3.5" aria-hidden="true" />
+            </button>
           </Alert>
         )}
 
@@ -622,9 +768,19 @@ export function KnowledgeView({
                 {t?.knowledgeSourcesTitle || 'Indexed Sources'}
               </h2>
             </div>
-            <Badge variant="secondary" className="tabular-nums">
-              {items.length}
-            </Badge>
+            <div className="flex items-center gap-2">
+              {pendingCount > 0 && (
+                <Badge variant="warning" className="tabular-nums gap-1">
+                  <Loader2 className="size-3 animate-spin" aria-hidden="true" />
+                  <span>
+                    {pendingCount} {t?.knowledgePendingBadge || 'indexing'}
+                  </span>
+                </Badge>
+              )}
+              <Badge variant="secondary" className="tabular-nums">
+                {readyCount}
+              </Badge>
+            </div>
           </div>
 
           {items.length === 0 ? (
@@ -644,8 +800,7 @@ export function KnowledgeView({
                   <TableHead>{t?.knowledgeColType || 'Type'}</TableHead>
                   <TableHead>{t?.knowledgeColStatus || 'Status'}</TableHead>
                   <TableHead>{t?.knowledgeColChunks || 'Chunks'}</TableHead>
-                  <TableHead>{t?.knowledgeColVector || 'Vector'}</TableHead>
-                  <TableHead className="w-12 text-right" />
+                  <TableHead className="w-24 text-right" />
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -653,40 +808,264 @@ export function KnowledgeView({
                   <TableRow key={s.id}>
                     <TableCell className="font-medium text-foreground">{s.title}</TableCell>
                     <TableCell>
-                      <Badge variant="outline" className="font-mono text-[10px]">
-                        {s.type}
+                      <Badge variant="outline" className="text-[11px] font-normal">
+                        {formatKnowledgeType(s.type, t)}
                       </Badge>
                     </TableCell>
                     <TableCell>
-                      <Badge variant={getKnowledgeStatusVariant(s.status)}>{s.status}</Badge>
+                      <Badge variant={getKnowledgeStatusVariant(s.status)} className="gap-1">
+                        {PENDING_KB_STATUSES.has(s.status) && (
+                          <Loader2 className="size-3 animate-spin" aria-hidden="true" />
+                        )}
+                        <span>{formatKnowledgeStatus(s.status, t)}</span>
+                      </Badge>
                     </TableCell>
                     <TableCell className="tabular-nums">{s.chunkCount}</TableCell>
-                    <TableCell className="font-mono text-[11px] text-muted-foreground">
-                      {s.embeddingDimensions ? `${s.embeddingDimensions}d` : '—'}
-                    </TableCell>
                     <TableCell className="text-right">
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon-sm"
-                        aria-label={`Delete ${s.title}`}
-                        onClick={async () => {
-                          await apiRequest(`/api/agents/${agent.id}/knowledge/${s.id}`, {
-                            method: 'DELETE',
-                          });
-                          refresh();
-                        }}
-                        className="text-muted-foreground hover:text-destructive hover:bg-destructive/10"
-                      >
-                        <Trash2 className="size-4" aria-hidden="true" />
-                      </Button>
+                      <div className="inline-flex items-center justify-end gap-1">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon-sm"
+                          title={t?.knowledgeViewEditBtn || 'View / Edit'}
+                          aria-label={`${t?.knowledgeEditAria || 'View or edit'} ${s.title}`}
+                          onClick={() => openEditSource(s)}
+                          className="text-muted-foreground hover:text-foreground"
+                        >
+                          <Pencil className="size-3.5" aria-hidden="true" />
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon-sm"
+                          aria-label={`${t?.knowledgeDeleteAria || 'Delete'} ${s.title}`}
+                          onClick={() => setSourcePendingDelete(s)}
+                          className="text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                        >
+                          <Trash2 className="size-4" aria-hidden="true" />
+                        </Button>
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
             </Table>
           )}
+
+          <Collapsible className="border-t border-border bg-muted/20">
+            <CollapsibleTrigger className="w-full px-5 py-2.5 flex items-center justify-between text-xs text-muted-foreground hover:text-foreground transition cursor-pointer group">
+              <span className="inline-flex items-center gap-1.5 font-medium">
+                <Cpu className="size-3.5" aria-hidden="true" />
+                <span>{t?.knowledgeTechDetails || 'Technical details'}</span>
+              </span>
+              <ChevronDown
+                className="size-3.5 transition-transform group-data-[state=open]:rotate-180"
+                aria-hidden="true"
+              />
+            </CollapsibleTrigger>
+            <CollapsibleContent className="px-5 pb-3 pt-1 text-xs text-muted-foreground space-y-1.5">
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                <span>
+                  {t?.embeddingModelLabel || 'Embedding model'}:{' '}
+                  <code className="font-mono text-foreground">{agent.embeddingModel}</code>
+                </span>
+                {items.some((s) => s.embeddingDimensions) && (
+                  <span>
+                    {t?.knowledgeColVector || 'Vector'}:{' '}
+                    <code className="font-mono text-foreground">
+                      {Array.from(
+                        new Set(
+                          items
+                            .map((s) => s.embeddingDimensions)
+                            .filter(Boolean)
+                            .map((d) => `${d}d`)
+                        )
+                      ).join(', ')}
+                    </code>
+                  </span>
+                )}
+              </div>
+            </CollapsibleContent>
+          </Collapsible>
         </Card>
+
+        {/* View / Edit Knowledge Source Dialog */}
+        <Dialog
+          open={Boolean(editingSource)}
+          onOpenChange={(open) => {
+            if (!open) setEditingSource(null);
+          }}
+        >
+          <DialogContent className="max-w-xl">
+            <DialogHeader>
+              <DialogTitle>{t?.knowledgeEditTitle || 'Knowledge Source Details'}</DialogTitle>
+              <DialogDescription>
+                {t?.knowledgeEditDesc ||
+                  'Inspect or update this knowledge source. Changing content re-queues indexing.'}
+              </DialogDescription>
+            </DialogHeader>
+
+            {editingSource && (
+              <form onSubmit={handleSaveEdit} className="space-y-4">
+                {editError && (
+                  <Alert variant="destructive">
+                    <AlertDescription>{editError}</AlertDescription>
+                  </Alert>
+                )}
+
+                <div className="flex flex-wrap items-center gap-2 text-xs">
+                  <Badge variant="outline">{formatKnowledgeType(editingSource.type, t)}</Badge>
+                  <Badge variant={getKnowledgeStatusVariant(editingSource.status)}>
+                    {formatKnowledgeStatus(editingSource.status, t)}
+                  </Badge>
+                  <span className="text-muted-foreground tabular-nums">
+                    {editingSource.chunkCount} {t?.knowledgeColChunks || 'Chunks'}
+                  </span>
+                  {editingSource.embeddingDimensions && (
+                    <span className="font-mono text-[11px] text-muted-foreground">
+                      {editingSource.embeddingDimensions}d
+                    </span>
+                  )}
+                </div>
+
+                {editingSource.errorMessage && (
+                  <Alert variant="destructive">
+                    <AlertDescription className="text-xs">
+                      {editingSource.errorMessage}
+                    </AlertDescription>
+                  </Alert>
+                )}
+
+                <div className="space-y-1.5">
+                  <Label htmlFor="kb-edit-title">
+                    {t?.knowledgeDocTitleLabel || 'Document title'}
+                  </Label>
+                  <Input
+                    id="kb-edit-title"
+                    required
+                    minLength={2}
+                    maxLength={200}
+                    value={editTitle}
+                    onChange={(e) => setEditTitle(e.target.value)}
+                  />
+                </div>
+
+                {editingSource.type === 'text' ? (
+                  <>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="kb-edit-content">
+                        {t?.knowledgeDocContentLabel || 'Content'}
+                      </Label>
+                      <Textarea
+                        id="kb-edit-content"
+                        required
+                        minLength={10}
+                        maxLength={200000}
+                        rows={7}
+                        value={editContent}
+                        onChange={(e) => setEditContent(e.target.value)}
+                        className="font-mono text-xs leading-relaxed"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="kb-edit-source-url">
+                        {t?.knowledgeSourceUrlOptionalLabel || 'Reference URL (optional)'}
+                      </Label>
+                      <Input
+                        id="kb-edit-source-url"
+                        type="url"
+                        maxLength={1000}
+                        placeholder="https://docs.example.com/..."
+                        value={editSourceUrl}
+                        onChange={(e) => setEditSourceUrl(e.target.value)}
+                      />
+                    </div>
+                  </>
+                ) : editingSource.type === 'url' ||
+                  editingSource.type === 'sitemap' ||
+                  editingSource.type === 'llms_txt' ? (
+                  <div className="space-y-1.5">
+                    <Label htmlFor="kb-edit-url">
+                      {t?.knowledgeSourceUrlLabel || 'Source URL'}
+                    </Label>
+                    <Input
+                      id="kb-edit-url"
+                      type="url"
+                      required
+                      maxLength={1000}
+                      value={editSourceUrl}
+                      onChange={(e) => setEditSourceUrl(e.target.value)}
+                    />
+                  </div>
+                ) : (
+                  isSafeHttpUrl(editingSource.sourceUrl) && (
+                    <div className="text-xs text-muted-foreground break-all">
+                      <a
+                        href={editingSource.sourceUrl.trim()}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-600 hover:underline inline-flex items-center gap-1"
+                      >
+                        <ExternalLink className="size-3 shrink-0" aria-hidden="true" />
+                        <span>{editingSource.sourceUrl}</span>
+                      </a>
+                    </div>
+                  )
+                )}
+
+                <DialogFooter>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => setEditingSource(null)}
+                    disabled={savingEdit}
+                  >
+                    {t?.cancel || 'Cancel'}
+                  </Button>
+                  <Button type="submit" disabled={savingEdit}>
+                    {savingEdit ? t?.saving || 'Saving...' : t?.knowledgeSaveBtn || 'Save changes'}
+                  </Button>
+                </DialogFooter>
+              </form>
+            )}
+          </DialogContent>
+        </Dialog>
+
+        {/* Delete Knowledge Source Confirmation */}
+        <AlertDialog
+          open={Boolean(sourcePendingDelete)}
+          onOpenChange={(open) => {
+            if (!open && !deletingSource) setSourcePendingDelete(null);
+          }}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>
+                {t?.knowledgeDeleteTitle || 'Delete knowledge source?'}
+              </AlertDialogTitle>
+              <AlertDialogDescription>
+                {t?.knowledgeDeleteDesc ||
+                  'This action cannot be undone. The source and all its indexed chunks will be permanently removed:'}{' '}
+                <strong className="text-foreground">{sourcePendingDelete?.title}</strong>
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={deletingSource}>
+                {t?.cancel || 'Cancel'}
+              </AlertDialogCancel>
+              <AlertDialogAction
+                onClick={(e) => {
+                  e.preventDefault();
+                  handleConfirmDelete();
+                }}
+                disabled={deletingSource}
+                className={buttonVariants({ variant: 'destructive' })}
+              >
+                {t?.knowledgeConfirmDeleteBtn || 'Yes, delete'}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
     </div>
   );
@@ -1368,18 +1747,101 @@ export function ProductsView({
   t?: Record<string, string>;
 }) {
   const [items, setItems] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+  const [notice, setNotice] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [priceLabel, setPriceLabel] = useState('$49/mo');
+  const [priceLabel, setPriceLabel] = useState('');
   const [checkoutUrl, setCheckoutUrl] = useState('');
+
+  const [editingProduct, setEditingProduct] = useState<any | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editPriceLabel, setEditPriceLabel] = useState('');
+  const [editDescription, setEditDescription] = useState('');
+  const [editCheckoutUrl, setEditCheckoutUrl] = useState('');
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
+
+  const [productPendingDelete, setProductPendingDelete] = useState<any | null>(null);
+  const [deletingProduct, setDeletingProduct] = useState(false);
 
   async function refresh() {
     const r = await apiRequest(`/api/agents/${agent.id}/products`);
     setItems(r.items || []);
   }
+
   useEffect(() => {
-    refresh();
+    let cancelled = false;
+    setLoading(true);
+    setNotice(null);
+    apiRequest(`/api/agents/${agent.id}/products`)
+      .then((r) => {
+        if (!cancelled) setItems(r.items || []);
+      })
+      .catch((err) => {
+        if (!cancelled) setNotice({ type: 'err', text: (err as Error).message });
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [agent.id]);
+
+  function openEditProduct(p: any) {
+    setEditingProduct(p);
+    setEditName(p.name || '');
+    setEditPriceLabel(p.priceLabel || '');
+    setEditDescription(p.description || '');
+    setEditCheckoutUrl(p.checkoutUrl || '');
+    setEditError(null);
+  }
+
+  async function handleSaveEdit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!editingProduct || savingEdit) return;
+    setSavingEdit(true);
+    setEditError(null);
+    try {
+      await apiRequest(`/api/agents/${agent.id}/products/${editingProduct.id}`, {
+        method: 'PATCH',
+        body: {
+          name: editName.trim(),
+          priceLabel: editPriceLabel.trim(),
+          description: editDescription.trim(),
+          checkoutUrl: editCheckoutUrl.trim(),
+        },
+      });
+      setEditingProduct(null);
+      setNotice({ type: 'ok', text: t?.productsUpdatedMsg || 'Product card updated.' });
+      await refresh().catch(() => undefined);
+    } catch (err) {
+      setEditError((err as Error).message);
+    } finally {
+      setSavingEdit(false);
+    }
+  }
+
+  async function handleConfirmDelete() {
+    if (!productPendingDelete || deletingProduct) return;
+    setDeletingProduct(true);
+    try {
+      await apiRequest(`/api/agents/${agent.id}/products/${productPendingDelete.id}`, {
+        method: 'DELETE',
+      });
+      setProductPendingDelete(null);
+      setNotice({ type: 'ok', text: t?.productsDeletedMsg || 'Product card deleted.' });
+      await refresh().catch(() => undefined);
+    } catch (err) {
+      setProductPendingDelete(null);
+      setNotice({ type: 'err', text: (err as Error).message });
+    } finally {
+      setDeletingProduct(false);
+    }
+  }
 
   return (
     <div className="flex-1 overflow-y-auto sidebar-scroll p-5 lg:p-6">
@@ -1391,9 +1853,15 @@ export function ProductsView({
               <h1 className="text-xl font-semibold text-foreground tracking-tight">
                 {t?.productsTitle || 'Products & Checkout Cards'}
               </h1>
-              <Badge variant="secondary" className="tabular-nums">
-                {items.length}
-              </Badge>
+              {loading ? (
+                <Badge variant="secondary" className="tabular-nums animate-pulse">
+                  ...
+                </Badge>
+              ) : (
+                <Badge variant="secondary" className="tabular-nums">
+                  {items.length}
+                </Badge>
+              )}
             </div>
             <p className="text-xs text-muted-foreground mt-1">
               {t?.productsSubtitle ||
@@ -1401,6 +1869,23 @@ export function ProductsView({
             </p>
           </div>
         </div>
+
+        {notice && (
+          <Alert
+            variant={notice.type === 'err' ? 'destructive' : 'success'}
+            className="flex items-center justify-between gap-3"
+          >
+            <AlertDescription>{notice.text}</AlertDescription>
+            <button
+              type="button"
+              onClick={() => setNotice(null)}
+              aria-label={t?.closeNotice || 'Dismiss notice'}
+              className="shrink-0 rounded-md p-1 opacity-70 hover:opacity-100 hover:bg-black/5 transition cursor-pointer"
+            >
+              <X className="size-3.5" aria-hidden="true" />
+            </button>
+          </Alert>
+        )}
 
         {/* Add Product Form Card */}
         <Card className="p-5 space-y-4">
@@ -1425,14 +1910,30 @@ export function ProductsView({
           <form
             onSubmit={async (e) => {
               e.preventDefault();
-              await apiRequest(`/api/agents/${agent.id}/products`, {
-                method: 'POST',
-                body: { name, description, priceLabel, checkoutUrl },
-              });
-              setName('');
-              setDescription('');
-              setCheckoutUrl('');
-              refresh();
+              if (submitting) return;
+              setSubmitting(true);
+              setNotice(null);
+              try {
+                await apiRequest(`/api/agents/${agent.id}/products`, {
+                  method: 'POST',
+                  body: {
+                    name: name.trim(),
+                    description: description.trim(),
+                    priceLabel: priceLabel.trim(),
+                    checkoutUrl: checkoutUrl.trim(),
+                  },
+                });
+                setName('');
+                setDescription('');
+                setPriceLabel('');
+                setCheckoutUrl('');
+                setNotice({ type: 'ok', text: t?.productsCreatedMsg || 'Product card added.' });
+                await refresh().catch(() => undefined);
+              } catch (err) {
+                setNotice({ type: 'err', text: (err as Error).message });
+              } finally {
+                setSubmitting(false);
+              }
             }}
             className="space-y-4"
           >
@@ -1444,7 +1945,7 @@ export function ProductsView({
                 <Input
                   id="prod-name"
                   required
-                  placeholder="Pro Plan"
+                  placeholder={t?.productsNamePh || 'e.g. Pro Plan'}
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                 />
@@ -1455,7 +1956,7 @@ export function ProductsView({
                 <Input
                   id="prod-price"
                   required
-                  placeholder="$49/mo"
+                  placeholder={t?.productsPricePh || 'e.g. $49/mo'}
                   value={priceLabel}
                   onChange={(e) => setPriceLabel(e.target.value)}
                 />
@@ -1466,7 +1967,10 @@ export function ProductsView({
                 <Input
                   id="prod-desc"
                   required
-                  placeholder="Unlimited conversations, priority support, and custom domain"
+                  placeholder={
+                    t?.productsDescPh ||
+                    'Unlimited conversations, priority support, and custom domain'
+                  }
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
                 />
@@ -1478,14 +1982,14 @@ export function ProductsView({
                   id="prod-url"
                   required
                   type="url"
-                  placeholder="https://buy.stripe.com/..."
+                  placeholder={t?.productsCheckoutPh || 'https://checkout.example.com/pro'}
                   value={checkoutUrl}
                   onChange={(e) => setCheckoutUrl(e.target.value)}
                 />
               </div>
             </div>
 
-            <Button type="submit">
+            <Button type="submit" disabled={submitting}>
               <Plus className="size-3.5" aria-hidden="true" />
               <span>{t?.productsAddBtn || 'Add Product Card'}</span>
             </Button>
@@ -1493,7 +1997,25 @@ export function ProductsView({
         </Card>
 
         {/* Product Cards Grid */}
-        {items.length === 0 ? (
+        {loading ? (
+          <div
+            className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"
+            aria-busy="true"
+          >
+            <span className="sr-only">{t?.productsLoading || 'Loading products...'}</span>
+            {[0, 1, 2].map((idx) => (
+              <Card key={idx} className="p-5 space-y-3 animate-pulse">
+                <div className="h-4 w-2/3 rounded bg-muted" />
+                <div className="h-3 w-full rounded bg-muted" />
+                <div className="h-3 w-4/5 rounded bg-muted" />
+                <div className="pt-2 border-t border-border space-y-2">
+                  <div className="h-5 w-1/3 rounded bg-muted" />
+                  <div className="h-3 w-3/4 rounded bg-muted" />
+                </div>
+              </Card>
+            ))}
+          </div>
+        ) : items.length === 0 ? (
           <Card>
             <EmptyState
               icon={ShoppingBag}
@@ -1511,21 +2033,28 @@ export function ProductsView({
                 <div className="space-y-1.5">
                   <div className="flex items-start justify-between gap-2">
                     <h3 className="font-semibold text-sm text-foreground leading-snug">{p.name}</h3>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon-sm"
-                      aria-label={`Delete product ${p.name}`}
-                      onClick={async () => {
-                        await apiRequest(`/api/agents/${agent.id}/products/${p.id}`, {
-                          method: 'DELETE',
-                        });
-                        refresh();
-                      }}
-                      className="text-muted-foreground hover:text-destructive hover:bg-destructive/10 -mt-1 -mr-1 shrink-0"
-                    >
-                      <Trash2 className="size-3.5" aria-hidden="true" />
-                    </Button>
+                    <div className="inline-flex items-center gap-0.5 -mt-1 -mr-1 shrink-0">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label={`${t?.productsEditAria || 'Edit product'} ${p.name}`}
+                        onClick={() => openEditProduct(p)}
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        <Pencil className="size-3.5" aria-hidden="true" />
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label={`${t?.productsDeleteAria || 'Delete product'} ${p.name}`}
+                        onClick={() => setProductPendingDelete(p)}
+                        className="text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                      >
+                        <Trash2 className="size-3.5" aria-hidden="true" />
+                      </Button>
+                    </div>
                   </div>
                   <p className="text-xs text-muted-foreground leading-relaxed">{p.description}</p>
                 </div>
@@ -1534,20 +2063,156 @@ export function ProductsView({
                   <div className="text-lg font-semibold tabular-nums text-foreground">
                     {p.priceLabel}
                   </div>
-                  <a
-                    href={p.checkoutUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-xs text-blue-600 hover:underline inline-flex items-center gap-1 max-w-full"
-                  >
-                    <ExternalLink className="size-3 shrink-0" aria-hidden="true" />
-                    <span className="truncate">{p.checkoutUrl}</span>
-                  </a>
+                  {isSafeHttpUrl(p.checkoutUrl) && (
+                    <a
+                      href={p.checkoutUrl.trim()}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-xs text-blue-600 hover:underline inline-flex items-center gap-1 max-w-full"
+                    >
+                      <ExternalLink className="size-3 shrink-0" aria-hidden="true" />
+                      <span className="truncate">{p.checkoutUrl}</span>
+                    </a>
+                  )}
                 </div>
               </Card>
             ))}
           </div>
         )}
+
+        {/* Edit Product Dialog */}
+        <Dialog
+          open={Boolean(editingProduct)}
+          onOpenChange={(open) => {
+            if (!open) setEditingProduct(null);
+          }}
+        >
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>{t?.productsEditTitle || 'Edit Product Card'}</DialogTitle>
+              <DialogDescription>
+                {t?.productsEditDesc || 'Update the product details and checkout link.'}
+              </DialogDescription>
+            </DialogHeader>
+
+            {editingProduct && (
+              <form onSubmit={handleSaveEdit} className="space-y-3.5">
+                {editError && (
+                  <Alert variant="destructive">
+                    <AlertDescription>{editError}</AlertDescription>
+                  </Alert>
+                )}
+
+                <div className="space-y-1.5">
+                  <Label htmlFor="prod-edit-name">
+                    {t?.productsNameLabel || 'Product / Plan Name'}
+                  </Label>
+                  <Input
+                    id="prod-edit-name"
+                    required
+                    minLength={2}
+                    maxLength={150}
+                    value={editName}
+                    onChange={(e) => setEditName(e.target.value)}
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label htmlFor="prod-edit-price">
+                    {t?.productsPriceLabel || 'Price label'}
+                  </Label>
+                  <Input
+                    id="prod-edit-price"
+                    required
+                    minLength={1}
+                    maxLength={60}
+                    value={editPriceLabel}
+                    onChange={(e) => setEditPriceLabel(e.target.value)}
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label htmlFor="prod-edit-desc">
+                    {t?.productsDescLabel || 'Short description'}
+                  </Label>
+                  <Textarea
+                    id="prod-edit-desc"
+                    required
+                    minLength={5}
+                    maxLength={1000}
+                    rows={3}
+                    value={editDescription}
+                    onChange={(e) => setEditDescription(e.target.value)}
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label htmlFor="prod-edit-url">
+                    {t?.productsCheckoutLabel || 'Checkout URL'}
+                  </Label>
+                  <Input
+                    id="prod-edit-url"
+                    required
+                    type="url"
+                    maxLength={1000}
+                    value={editCheckoutUrl}
+                    onChange={(e) => setEditCheckoutUrl(e.target.value)}
+                  />
+                </div>
+
+                <DialogFooter>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => setEditingProduct(null)}
+                    disabled={savingEdit}
+                  >
+                    {t?.cancel || 'Cancel'}
+                  </Button>
+                  <Button type="submit" disabled={savingEdit}>
+                    {savingEdit ? t?.saving || 'Saving...' : t?.productsSaveBtn || 'Save product'}
+                  </Button>
+                </DialogFooter>
+              </form>
+            )}
+          </DialogContent>
+        </Dialog>
+
+        {/* Delete Product Confirmation */}
+        <AlertDialog
+          open={Boolean(productPendingDelete)}
+          onOpenChange={(open) => {
+            if (!open && !deletingProduct) setProductPendingDelete(null);
+          }}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>
+                {t?.productsDeleteTitle || 'Delete this product?'}
+              </AlertDialogTitle>
+              <AlertDialogDescription>
+                {t?.productsDeleteDesc ||
+                  'This action cannot be undone. The product card will no longer be recommended by the agent:'}{' '}
+                <strong className="text-foreground">{productPendingDelete?.name}</strong>
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={deletingProduct}>
+                {t?.cancel || 'Cancel'}
+              </AlertDialogCancel>
+              <AlertDialogAction
+                onClick={(e) => {
+                  e.preventDefault();
+                  handleConfirmDelete();
+                }}
+                disabled={deletingProduct}
+                className={buttonVariants({ variant: 'destructive' })}
+              >
+                {t?.productsConfirmDeleteBtn || 'Yes, delete product'}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
     </div>
   );
@@ -2490,11 +3155,12 @@ export function AccountSettingsView({
   onAccountUpdated,
 }: {
   t?: Record<string, string>;
-  onAccountUpdated: () => void;
+  onAccountUpdated: () => Promise<void> | void;
 }) {
   const [domainsText, setDomainsText] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [justSaved, setJustSaved] = useState(false);
   const [notice, setNotice] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
 
   useEffect(() => {
@@ -2512,6 +3178,22 @@ export function AccountSettingsView({
       .finally(() => setLoading(false));
   }, []);
 
+  useEffect(() => {
+    if (!notice || notice.type !== 'ok') return;
+    const timer = window.setTimeout(() => {
+      setNotice(null);
+    }, 4000);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
+
+  useEffect(() => {
+    if (!justSaved) return;
+    const timer = window.setTimeout(() => {
+      setJustSaved(false);
+    }, 4000);
+    return () => window.clearTimeout(timer);
+  }, [justSaved]);
+
   const parsedDomains = domainsText
     .split('\n')
     .map((line) => line.trim())
@@ -2522,6 +3204,7 @@ export function AccountSettingsView({
     if (saving) return;
     setSaving(true);
     setNotice(null);
+    setJustSaved(false);
     try {
       const res = await apiRequest<{ settings: { allowedDomains: string[] } }>(
         '/api/account/settings',
@@ -2531,11 +3214,12 @@ export function AccountSettingsView({
         }
       );
       setDomainsText((res.settings?.allowedDomains || []).join('\n'));
-      await onAccountUpdated();
       setNotice({
         type: 'ok',
         text: t?.globalDomainsSavedMsg || 'Allowed domains updated globally for all agents.',
       });
+      setJustSaved(true);
+      await Promise.resolve(onAccountUpdated()).catch(() => undefined);
     } catch (err) {
       setNotice({ type: 'err', text: (err as Error).message });
     } finally {
@@ -2560,8 +3244,22 @@ export function AccountSettingsView({
           <Alert
             variant={notice.type === 'ok' ? 'success' : 'destructive'}
             role={notice.type === 'err' ? 'alert' : 'status'}
+            className="flex items-center justify-between gap-3"
           >
-            <AlertDescription>{notice.text}</AlertDescription>
+            <div className="flex items-center gap-2 min-w-0">
+              {notice.type === 'ok' && (
+                <CheckCircle2 className="size-4 shrink-0" aria-hidden="true" />
+              )}
+              <AlertDescription className="font-medium">{notice.text}</AlertDescription>
+            </div>
+            <button
+              type="button"
+              onClick={() => setNotice(null)}
+              aria-label={t?.closeNotice || 'Dismiss notice'}
+              className="shrink-0 rounded-md p-1 opacity-70 hover:opacity-100 hover:bg-black/5 transition cursor-pointer"
+            >
+              <X className="size-3.5" aria-hidden="true" />
+            </button>
           </Alert>
         )}
 
@@ -2604,7 +3302,10 @@ export function AccountSettingsView({
                 spellCheck={false}
                 placeholder={'https://seusite.com.br\nhttp://localhost:5173'}
                 value={domainsText}
-                onChange={(e) => setDomainsText(e.target.value)}
+                onChange={(e) => {
+                  setDomainsText(e.target.value);
+                  setJustSaved(false);
+                }}
                 aria-describedby="account-allowed-domains-hint"
                 className="font-mono text-xs leading-relaxed"
               />
@@ -2616,7 +3317,16 @@ export function AccountSettingsView({
 
             <div className="flex justify-end">
               <Button type="submit" disabled={loading || saving}>
-                <span>{saving ? t?.saving || 'Saving...' : t?.byokSaveDomains || 'Save Domains'}</span>
+                {justSaved && !saving && (
+                  <CheckCircle2 className="size-3.5" aria-hidden="true" />
+                )}
+                <span>
+                  {saving
+                    ? t?.saving || 'Saving...'
+                    : justSaved
+                      ? t?.savedShort || 'Saved!'
+                      : t?.byokSaveDomains || 'Save Domains'}
+                </span>
               </Button>
             </div>
           </form>

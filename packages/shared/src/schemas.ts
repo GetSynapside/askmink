@@ -17,9 +17,6 @@ export type AIProvider = (typeof AI_PROVIDERS)[number];
 export const PROVIDER_PURPOSES = ['chat', 'embedding'] as const;
 export type ProviderPurpose = (typeof PROVIDER_PURPOSES)[number];
 
-export const AGENT_MODES = ['sales', 'support'] as const;
-export type AgentMode = (typeof AGENT_MODES)[number];
-
 export const WEBHOOK_EVENTS = [
   'ticket.created',
   'booking.created',
@@ -53,32 +50,33 @@ export const LoginSchema = z.object({
   password: z.string().min(1).max(128),
 });
 
-export const UrlRuleSchema = z.object({
-  pattern: z.string().trim().min(1).max(255),
-  mode: z.enum(AGENT_MODES),
-  welcomeMessage: z.string().max(500).optional(),
-  promptOverride: z.string().max(4000).optional(),
-});
-export type UrlRule = z.infer<typeof UrlRuleSchema>;
+export const DEFAULT_ALLOWED_DOMAINS = [
+  'http://127.0.0.1:3000',
+  'http://localhost:3000',
+  'http://127.0.0.1:5173',
+  'http://localhost:5173',
+] as const;
+
+export const DEFAULT_SYSTEM_PROMPTS_BY_LANG: Record<SupportedLanguage, string> = {
+  en: 'You are Askmink, a helpful AI sales and support agent. Answer accurately using the knowledge base, cite sources when applicable, and use tools when helpful.',
+  pt: 'Você é o assistente de IA da Askmink para vendas e suporte. Responda com precisão usando a base de conhecimento, cite fontes quando aplicável e utilize as ferramentas disponíveis quando útil.',
+  es: 'Eres el asistente de IA de Askmink para ventas y soporte. Responde con precisión usando la base de conocimiento, cita fuentes cuando corresponda y utiliza las herramientas disponibles cuando sea útil.',
+};
+
+export const DEFAULT_WELCOME_BY_LANG: Record<SupportedLanguage, string> = {
+  en: 'Hi! How can I help you today?',
+  pt: 'Olá! Como posso ajudar você hoje?',
+  es: '¡Hola! ¿Cómo puedo ayudarte hoy?',
+};
 
 export const CreateAgentSchema = z.object({
   name: z.string().trim().min(2).max(100),
   description: z.string().max(500).optional().default(''),
   defaultLanguage: z.enum(SUPPORTED_LANGUAGES).default('en'),
-  systemPrompt: z
-    .string()
-    .max(8000)
-    .default(
-      'You are Askmink, a helpful AI sales and support agent. Answer accurately using the knowledge base, cite sources when applicable, and use tools when helpful.'
-    ),
-  welcomeMessage: z.string().max(500).default('Hi! How can I help you today?'),
-  allowedDomains: z.array(z.string().trim().min(1).max(255)).default(['http://127.0.0.1:3000', 'http://localhost:3000']),
-  urlRules: z.array(UrlRuleSchema).default([
-    { pattern: '/pricing*', mode: 'sales' },
-    { pattern: '/products/*', mode: 'sales' },
-    { pattern: '/docs/*', mode: 'support' },
-    { pattern: '/help/*', mode: 'support' },
-  ]),
+  systemPrompt: z.string().max(8000).default(DEFAULT_SYSTEM_PROMPTS_BY_LANG.en),
+  welcomeMessage: z.string().max(500).default(DEFAULT_WELCOME_BY_LANG.en),
+  starterPrompts: z.array(z.string().trim().min(1).max(200)).max(6).default([]),
+  allowedDomains: z.array(z.string().trim().min(1).max(255)).default([...DEFAULT_ALLOWED_DOMAINS]),
   maxMessagesPerConversation: z.number().int().min(5).max(500).default(50),
   showBranding: z.boolean().default(true),
   primaryColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).default('#2563EB'),
@@ -118,10 +116,48 @@ export const CreateProviderKeySchema = z.object({
   activate: z.boolean().optional(),
 });
 
+type GlobalWithURL = typeof globalThis & {
+  URL?: new (input: string) => { protocol: string; hostname?: string };
+};
+
+function isValidHttpUrl(value: string): boolean {
+  if (/[\u0000-\u001f\u007f]/.test(value) || !/^https?:\/\//i.test(value)) {
+    return false;
+  }
+  const URLCtor = (globalThis as GlobalWithURL).URL;
+  if (typeof URLCtor === 'function') {
+    try {
+      const parsed = new URLCtor(value);
+      return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && Boolean(parsed.hostname);
+    } catch {
+      return false;
+    }
+  }
+  return /^https?:\/\/[^/\s]+/i.test(value);
+}
+
+export const OptionalHttpSourceUrlSchema = z
+  .union([
+    z.literal(''),
+    z
+      .string()
+      .trim()
+      .min(1)
+      .max(1000)
+      .refine(isValidHttpUrl, 'Must be a valid http:// or https:// URL'),
+  ])
+  .optional();
+
 export const CreateKnowledgeTextSchema = z.object({
   title: z.string().trim().min(2).max(200),
   content: z.string().trim().min(10).max(200_000),
-  sourceUrl: z.string().url().max(1000).optional().or(z.literal('')),
+  sourceUrl: OptionalHttpSourceUrlSchema,
+});
+
+export const UpdateKnowledgeSourceSchema = z.object({
+  title: z.string().trim().min(2).max(200).optional(),
+  content: z.string().trim().min(10).max(200_000).optional(),
+  sourceUrl: OptionalHttpSourceUrlSchema,
 });
 
 export const CreateKnowledgeUrlSchema = z.object({
@@ -245,6 +281,7 @@ export const WidgetChatRequestSchema = z.object({
 });
 
 export interface Citation {
+  index?: number;
   sourceId: string;
   title: string;
   url?: string;

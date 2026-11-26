@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import type { SupportedLanguage } from '@askmink/shared';
 import { apiRequest } from '@/lib/api';
+import { SafeMarkdown, isSafeHttpUrl } from '@/components/SafeMarkdown';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -83,6 +84,48 @@ const DEFAULT_LAUNCHER_LABEL: Record<SupportedLanguage, string> = {
   es: 'Chatea con nosotros',
 };
 
+function parseStarterPrompts(text: string): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim().slice(0, 200);
+    if (trimmed && !seen.has(trimmed)) {
+      seen.add(trimmed);
+      out.push(trimmed);
+      if (out.length >= 6) break;
+    }
+  }
+  return out;
+}
+
+function resolveStarterPromptsText(agent: any, fallbackLang: SupportedLanguage): string {
+  if (Array.isArray(agent?.starterPrompts) && agent.starterPrompts.length > 0) {
+    const cleaned = agent.starterPrompts
+      .map((s: unknown) => String(s ?? '').trim().slice(0, 200))
+      .filter(Boolean);
+    if (cleaned.length > 0) return cleaned.join('\n');
+  }
+  return readLocalPrefs(agent.id, fallbackLang).starterPromptsText;
+}
+
+function dedupeCards(cards?: Array<Record<string, any>>): Array<Record<string, any>> {
+  if (!Array.isArray(cards)) return [];
+  const seenProducts = new Set<string>();
+  const out: Array<Record<string, any>> = [];
+  for (const card of cards) {
+    if (!card || typeof card !== 'object') continue;
+    if (card.type === 'product_card') {
+      const pid = typeof card.productId === 'string' ? card.productId.trim() : '';
+      if (pid) {
+        if (seenProducts.has(pid)) continue;
+        seenProducts.add(pid);
+      }
+    }
+    out.push(card);
+  }
+  return out;
+}
+
 function readLocalPrefs(agentId: string, lang: SupportedLanguage): LocalWidgetPrefs {
   try {
     const raw = localStorage.getItem(`askmink_widget_prefs_${agentId}`);
@@ -130,7 +173,10 @@ export function WidgetStudioView({ agent, lang, t, onAgentUpdated }: WidgetStudi
   const [primaryColor, setPrimaryColor] = useState<string>(agent.primaryColor || '#2563EB');
   const [showBranding, setShowBranding] = useState<boolean>(agent.showBranding !== false);
 
-  const [prefs, setPrefs] = useState<LocalWidgetPrefs>(() => readLocalPrefs(agent.id, lang));
+  const [prefs, setPrefs] = useState<LocalWidgetPrefs>(() => ({
+    ...readLocalPrefs(agent.id, lang),
+    starterPromptsText: resolveStarterPromptsText(agent, lang),
+  }));
 
   const [viewport, setViewport] = useState<'desktop' | 'mobile'>('desktop');
   const [widgetOpen, setWidgetOpen] = useState(true);
@@ -160,7 +206,10 @@ export function WidgetStudioView({ agent, lang, t, onAgentUpdated }: WidgetStudi
     setDefaultLanguage(agent.defaultLanguage || 'en');
     setPrimaryColor(agent.primaryColor || '#2563EB');
     setShowBranding(agent.showBranding !== false);
-    setPrefs(readLocalPrefs(agent.id, lang));
+    setPrefs({
+      ...readLocalPrefs(agent.id, lang),
+      starterPromptsText: resolveStarterPromptsText(agent, lang),
+    });
     setConversationId(undefined);
     setMessages([
       {
@@ -190,12 +239,20 @@ export function WidgetStudioView({ agent, lang, t, onAgentUpdated }: WidgetStudi
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, widgetOpen, previewMode]);
 
+  const starterPrompts = parseStarterPrompts(prefs.starterPromptsText);
+  const savedStarterPrompts = Array.isArray(agent.starterPrompts)
+    ? parseStarterPrompts(
+        agent.starterPrompts.map((s: unknown) => String(s ?? '').trim()).join('\n')
+      )
+    : [];
+
   const isDirty =
     name !== (agent.name || '') ||
     welcomeMessage !== (agent.welcomeMessage || '') ||
     defaultLanguage !== (agent.defaultLanguage || 'en') ||
     primaryColor.toLowerCase() !== (agent.primaryColor || '#2563EB').toLowerCase() ||
-    showBranding !== (agent.showBranding !== false);
+    showBranding !== (agent.showBranding !== false) ||
+    JSON.stringify(starterPrompts) !== JSON.stringify(savedStarterPrompts);
 
   const validHex = /^#[0-9a-fA-F]{6}$/.test(primaryColor) ? primaryColor : '#2563EB';
 
@@ -205,12 +262,6 @@ export function WidgetStudioView({ agent, lang, t, onAgentUpdated }: WidgetStudi
       : prefs.cornerStyle === 'classic'
         ? { panel: '12px', launcher: '12px', bubble: '10px', btn: '8px' }
         : { panel: '18px', launcher: '9999px', bubble: '14px', btn: '10px' };
-
-  const starterPrompts = prefs.starterPromptsText
-    .split('\n')
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .slice(0, 4);
 
   const embedAttrs = [
     `src="${window.location.origin}/widget.js"`,
@@ -229,24 +280,29 @@ export function WidgetStudioView({ agent, lang, t, onAgentUpdated }: WidgetStudi
   async function handleSave() {
     setSaving(true);
     setNotice(null);
+    const nextName = name.trim() || agent.name;
+    const nextWelcome = welcomeMessage.trim() || 'Hi! How can I help you today?';
     try {
       await apiRequest(`/api/agents/${agent.id}`, {
         method: 'PATCH',
         body: {
-          name: name.trim() || agent.name,
-          welcomeMessage: welcomeMessage.trim() || 'Hi! How can I help you today?',
+          name: nextName,
+          welcomeMessage: nextWelcome,
           defaultLanguage,
           primaryColor: validHex,
           showBranding,
+          starterPrompts,
         },
       });
-      await onAgentUpdated();
+      setName(nextName);
+      setWelcomeMessage(nextWelcome);
       try {
         localStorage.setItem(`askmink_check_widget_${agent.id}`, '1');
       } catch {
         // Ignore storage write errors
       }
       setNotice({ type: 'ok', text: t.savedSuccess || 'Saved.' });
+      await Promise.resolve(onAgentUpdated()).catch(() => undefined);
     } catch (err) {
       setNotice({ type: 'err', text: (err as Error).message || t.saveError || 'Save failed.' });
     } finally {
@@ -278,7 +334,7 @@ export function WidgetStudioView({ agent, lang, t, onAgentUpdated }: WidgetStudi
         body: {
           conversationId,
           message: trimmed,
-          pageUrl: '/pricing',
+          pageUrl: '/',
           language: defaultLanguage,
         },
       });
@@ -317,48 +373,33 @@ export function WidgetStudioView({ agent, lang, t, onAgentUpdated }: WidgetStudi
     {
       id: 'demo-user',
       role: 'user',
-      text:
-        defaultLanguage === 'pt'
-          ? 'Quero conhecer o plano Pro e agendar uma demo.'
-          : defaultLanguage === 'es'
-            ? 'Quiero ver el plan Pro y agendar una demo.'
-            : 'Tell me about the Pro plan and available demo times.',
+      text: t.demoUserMsg || 'Tell me about the Pro plan and available demo times.',
     },
     {
       id: 'demo-bot',
       role: 'assistant',
-      text:
-        defaultLanguage === 'pt'
-          ? 'Aqui estão os detalhes do plano Pro e os próximos horários livres para demonstração:'
-          : defaultLanguage === 'es'
-            ? 'Aquí tienes los detalles del plan Pro y los próximos horarios disponibles:'
-            : 'Here are the Pro plan details and the next available demo slots:',
-      citations: [{ title: 'Pricing Guide' }, { title: 'FAQ' }],
+      text: t.demoBotMsg || 'Here are the Pro plan details and the next available demo slots:',
+      citations: [
+        { title: t.demoCite1 || 'Pricing Guide' },
+        { title: t.demoCite2 || 'FAQ' },
+      ],
       cards: [
         {
           type: 'product_card',
-          name: 'Pro Plan',
+          productId: 'demo-pro-plan',
+          name: t.demoProductName || 'Pro Plan',
           description:
-            defaultLanguage === 'pt'
-              ? 'RAG híbrido ilimitado, MCP e widget white-label.'
-              : defaultLanguage === 'es'
-                ? 'RAG híbrido ilimitado, MCP y widget white-label.'
-                : 'Unlimited hybrid RAG, MCP tools, and white-label widget.',
-          priceLabel: '$49/mo',
+            t.demoProductDesc || 'Unlimited hybrid RAG, MCP tools, and white-label widget.',
+          priceLabel: t.demoProductPrice || '$49/mo',
         },
         {
           type: 'booking_slots',
-          title:
-            defaultLanguage === 'pt'
-              ? 'Horários disponíveis'
-              : defaultLanguage === 'es'
-                ? 'Horarios disponibles'
-                : 'Available times',
+          title: t.demoBookingTitle || 'Available times',
           slots: [
-            { label: 'Tue 10:00' },
-            { label: 'Tue 14:30' },
-            { label: 'Wed 11:00' },
-            { label: 'Thu 16:00' },
+            { label: t.demoSlot1 || 'Tue 10:00' },
+            { label: t.demoSlot2 || 'Tue 14:30' },
+            { label: t.demoSlot3 || 'Wed 11:00' },
+            { label: t.demoSlot4 || 'Thu 16:00' },
           ],
         },
       ],
@@ -640,7 +681,7 @@ export function WidgetStudioView({ agent, lang, t, onAgentUpdated }: WidgetStudi
         {/* Sticky Save Bar */}
         <div className="p-4 border-t border-border bg-muted/30 flex items-center justify-between gap-2 shrink-0">
           <span className="text-[11px] text-muted-foreground">
-            {isDirty ? t.unsavedChanges : t.online}
+            {isDirty ? t.unsavedChanges : t.allChangesSaved || 'All changes saved'}
           </span>
           <Button type="button" onClick={handleSave} disabled={saving}>
             <Save className="size-3.5" aria-hidden="true" />
@@ -746,7 +787,7 @@ export function WidgetStudioView({ agent, lang, t, onAgentUpdated }: WidgetStudi
                     : 'bg-white border border-border text-muted-foreground'
                 }`}
               >
-                https://your-website.com/pricing
+                https://your-website.com/
               </div>
             </div>
 
@@ -893,7 +934,7 @@ export function WidgetStudioView({ agent, lang, t, onAgentUpdated }: WidgetStudi
                               ? { backgroundColor: validHex, color: '#FFFFFF' }
                               : {}),
                           }}
-                          className={`max-w-[88%] px-3 py-2 text-[13px] leading-relaxed whitespace-pre-wrap break-words ${
+                          className={`max-w-[88%] px-3 py-2 text-[13px] leading-relaxed break-words ${
                             m.role === 'user'
                               ? 'ml-auto rounded-br-sm'
                               : isDarkWidget
@@ -901,30 +942,50 @@ export function WidgetStudioView({ agent, lang, t, onAgentUpdated }: WidgetStudi
                                 : 'bg-white border border-[#EAECEF] text-[#111827] rounded-bl-sm'
                           }`}
                         >
-                          <div>{m.text}</div>
+                          {m.role === 'assistant' ? (
+                            <SafeMarkdown content={m.text} />
+                          ) : (
+                            <div className="whitespace-pre-wrap">{m.text}</div>
+                          )}
 
                           {m.citations && m.citations.length > 0 && (
                             <div className="flex flex-wrap gap-1 mt-2">
-                              {m.citations.map((c, idx) => (
-                                <span
-                                  key={idx}
-                                  className={`text-[10px] px-2 py-0.5 rounded-full border ${
-                                    isDarkWidget
-                                      ? 'bg-[#1E293B] border-[#334155] text-[#93C5FD]'
-                                      : 'bg-[#EFF6FF] border-[#DBEAFE] text-[#1D4ED8]'
-                                  }`}
-                                >
-                                  {c.title}
-                                </span>
-                              ))}
+                              {m.citations.map((c, idx) =>
+                                isSafeHttpUrl(c.url) ? (
+                                  <a
+                                    key={idx}
+                                    href={c.url.trim()}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className={`text-[10px] px-2 py-0.5 rounded-full border underline-offset-2 hover:underline ${
+                                      isDarkWidget
+                                        ? 'bg-[#1E293B] border-[#334155] text-[#93C5FD]'
+                                        : 'bg-[#EFF6FF] border-[#DBEAFE] text-[#1D4ED8]'
+                                    }`}
+                                  >
+                                    {c.title}
+                                  </a>
+                                ) : (
+                                  <span
+                                    key={idx}
+                                    className={`text-[10px] px-2 py-0.5 rounded-full border ${
+                                      isDarkWidget
+                                        ? 'bg-[#1E293B] border-[#334155] text-[#93C5FD]'
+                                        : 'bg-[#EFF6FF] border-[#DBEAFE] text-[#1D4ED8]'
+                                    }`}
+                                  >
+                                    {c.title}
+                                  </span>
+                                )
+                              )}
                             </div>
                           )}
 
-                          {m.cards?.map((card, idx) => {
+                          {dedupeCards(m.cards).map((card, idx) => {
                             if (card.type === 'product_card') {
                               return (
                                 <div
-                                  key={idx}
+                                  key={card.productId || idx}
                                   className={`mt-2 p-3 rounded-xl border space-y-1.5 ${
                                     isDarkWidget
                                       ? 'bg-[#111827] border-[#27272A]'
@@ -942,15 +1003,30 @@ export function WidgetStudioView({ agent, lang, t, onAgentUpdated }: WidgetStudi
                                   <div className="text-sm font-bold tabular-nums">
                                     {card.priceLabel}
                                   </div>
-                                  <span
-                                    style={{
-                                      backgroundColor: validHex,
-                                      borderRadius: radiusTokens.btn,
-                                    }}
-                                    className="inline-block px-3 py-1 text-[11px] font-medium text-white"
-                                  >
-                                    Checkout
-                                  </span>
+                                  {isSafeHttpUrl(card.checkoutUrl) ? (
+                                    <a
+                                      href={card.checkoutUrl.trim()}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      style={{
+                                        backgroundColor: validHex,
+                                        borderRadius: radiusTokens.btn,
+                                      }}
+                                      className="inline-block px-3 py-1 text-[11px] font-medium text-white hover:brightness-110 transition"
+                                    >
+                                      {t.demoCheckoutBtn || 'Proceed to checkout'}
+                                    </a>
+                                  ) : (
+                                    <span
+                                      style={{
+                                        backgroundColor: validHex,
+                                        borderRadius: radiusTokens.btn,
+                                      }}
+                                      className="inline-block px-3 py-1 text-[11px] font-medium text-white"
+                                    >
+                                      {t.demoCheckoutBtn || 'Proceed to checkout'}
+                                    </span>
+                                  )}
                                 </div>
                               );
                             }
@@ -1007,9 +1083,9 @@ export function WidgetStudioView({ agent, lang, t, onAgentUpdated }: WidgetStudi
                         messages.length === 1 &&
                         starterPrompts.length > 0 && (
                           <div className="flex flex-wrap gap-1.5 pt-1">
-                            {starterPrompts.map((prompt) => (
+                            {starterPrompts.map((prompt, idx) => (
                               <button
-                                key={prompt}
+                                key={`${prompt}-${idx}`}
                                 type="button"
                                 onClick={() => sendLiveMessage(prompt)}
                                 className={`text-[11px] px-2.5 py-1.5 rounded-full border transition text-left cursor-pointer ${
@@ -1082,7 +1158,7 @@ export function WidgetStudioView({ agent, lang, t, onAgentUpdated }: WidgetStudi
                             : 'bg-white text-[#9CA3AF]'
                         }`}
                       >
-                        Powered by Askmink
+                        {t.widgetPoweredBy || 'Powered by Askmink'}
                       </div>
                     )}
                   </div>

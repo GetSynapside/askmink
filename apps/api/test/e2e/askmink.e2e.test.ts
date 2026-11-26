@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import zlib from 'node:zlib';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { serve } from '@hono/node-server';
@@ -103,6 +104,24 @@ async function waitFor<T>(fn: () => Promise<T>, predicate: (val: T) => boolean, 
   return last;
 }
 
+function uniqueSuffix(): string {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function collectSourceFiles(dir: string): string[] {
+  const entries = fs.readdirSync(dir, { withFileTypes: true });
+  const files: string[] = [];
+  for (const entry of entries) {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...collectSourceFiles(fullPath));
+    } else if (/\.(ts|tsx|js|jsx)$/.test(entry.name)) {
+      files.push(fullPath);
+    }
+  }
+  return files;
+}
+
 describe('Askmink MVP E2E Suite (Real PostgreSQL 18 + pgvector + pg-boss + Hono)', () => {
   let ctx: AskminkAppContext;
   let apiServer: ReturnType<typeof serve>;
@@ -191,7 +210,7 @@ describe('Askmink MVP E2E Suite (Real PostgreSQL 18 + pgvector + pg-boss + Hono)
     expect(isPrivateOrReservedIp('8.8.8.8')).toBe(false);
   });
 
-  it('E2E Full Lifecycle: Auth, CSRF, Tenant Isolation, BYOK, Multi-Dim RAG (1024d -> 768d), Dual-Mode, Atomic Booking, HMAC Webhook, Immutable JWT Tool & Widget <30KB', async () => {
+  it('E2E Full Lifecycle: Auth, CSRF, Tenant Isolation, BYOK, Multi-Dim RAG (1024d -> 768d), Atomic Booking, HMAC Webhook, Immutable JWT Tool & Widget <30KB', async () => {
     const unique = Date.now();
     const alice = createTestClient(baseUrl);
     const bob = createTestClient(baseUrl);
@@ -307,7 +326,6 @@ describe('Askmink MVP E2E Suite (Real PostgreSQL 18 + pgvector + pg-boss + Hono)
       body: { message: 'What is included in SKU-MINK-9001?', pageUrl: '/docs/sku' },
     });
     expect(ragChat.status).toBe(200);
-    expect(ragChat.data.mode).toBe('support');
     expect(ragChat.data.citations.length).toBeGreaterThan(0);
     expect(ragChat.data.text).toContain('SKU-MINK-9001');
     expect(ragChat.data.trace.ragChunks.length).toBeGreaterThan(0);
@@ -333,7 +351,7 @@ describe('Askmink MVP E2E Suite (Real PostgreSQL 18 + pgvector + pg-boss + Hono)
     );
     expect(sources768.data.items[0].embeddingDimensions).toBe(768);
 
-    // 7. Product Checkout Card (Sales mode) + Outbound HMAC Webhook (Support Ticket)
+    // 7. Product Checkout Card + Outbound HMAC Webhook (Support Ticket)
     await alice.fetchJson(`/api/agents/${agentId}/products`, {
       method: 'POST',
       body: {
@@ -358,7 +376,6 @@ describe('Askmink MVP E2E Suite (Real PostgreSQL 18 + pgvector + pg-boss + Hono)
       body: { message: 'I want to buy the Pro plan checkout', pageUrl: '/pricing' },
     });
     expect(salesChat.status).toBe(200);
-    expect(salesChat.data.mode).toBe('sales');
     expect(salesChat.data.cards.some((c: any) => c.type === 'product_card')).toBe(true);
 
     const ticketChat = await alice.fetchJson(`/api/agents/${agentId}/playground/chat`, {
@@ -768,6 +785,680 @@ describe('Askmink MVP E2E Suite (Real PostgreSQL 18 + pgvector + pg-boss + Hono)
     expect(loginNewPw.status).toBe(200);
   });
 
+  it('(a) KB Edit (PATCH), Re-Ingest, RAG Search, CSRF & Multi-Tenant Isolation', async () => {
+    const tag = uniqueSuffix();
+    const owner = createTestClient(baseUrl);
+    const intruder = createTestClient(baseUrl);
+
+    const ownerSignup = await owner.fetchJson('/api/auth/signup', {
+      method: 'POST',
+      body: { name: 'KB Owner', email: `kb-owner+${tag}@example.com`, password: 'StrongPassword!2026' },
+    });
+    expect(ownerSignup.status).toBe(201);
+
+    const intruderSignup = await intruder.fetchJson('/api/auth/signup', {
+      method: 'POST',
+      body: { name: 'KB Intruder', email: `kb-intruder+${tag}@example.com`, password: 'StrongPassword!2026' },
+    });
+    expect(intruderSignup.status).toBe(201);
+
+    const agentRes = await owner.fetchJson('/api/agents', {
+      method: 'POST',
+      body: { name: 'KB Edit Agent' },
+    });
+    expect(agentRes.status).toBe(201);
+    const agentId: string = agentRes.data.item.id;
+
+    const createKb = await owner.fetchJson(`/api/agents/${agentId}/knowledge/text`, {
+      method: 'POST',
+      body: {
+        title: 'Initial Policy',
+        content: 'The legacy compliance token is OLD-TOKEN-ALPHA-111 for internal audits.',
+        sourceUrl: 'https://docs.example.com/initial-policy',
+      },
+    });
+    expect(createKb.status).toBe(201);
+    const sourceId: string = createKb.data.item.id;
+
+    const initialReady = await waitFor(
+      () => owner.fetchJson(`/api/agents/${agentId}/knowledge`),
+      (r) => r.data.items?.find((i: any) => i.id === sourceId)?.status === 'ready'
+    );
+    expect(initialReady.data.items?.find((i: any) => i.id === sourceId)?.status).toBe('ready');
+
+    // CSRF enforcement on PATCH
+    const noCsrfPatch = await owner.fetchJson(`/api/agents/${agentId}/knowledge/${sourceId}`, {
+      method: 'PATCH',
+      headers: { 'x-skip-csrf': '1' },
+      body: { title: 'Blocked' },
+    });
+    expect(noCsrfPatch.status).toBe(403);
+
+    // Multi-tenant isolation
+    const intruderPatch = await intruder.fetchJson(`/api/agents/${agentId}/knowledge/${sourceId}`, {
+      method: 'PATCH',
+      body: { title: 'Hijack', content: 'Unauthorized edit content here' },
+    });
+    expect(intruderPatch.status).toBe(404);
+
+    // Owner updates title, content, and sourceUrl -> triggers re-ingestion
+    const updatedPatch = await owner.fetchJson(`/api/agents/${agentId}/knowledge/${sourceId}`, {
+      method: 'PATCH',
+      body: {
+        title: 'Updated Compliance Policy',
+        content: 'All partners must follow token UPDATED-POLICY-OMEGA-999 during quarterly audits.',
+        sourceUrl: 'https://docs.example.com/updated-policy',
+      },
+    });
+    expect(updatedPatch.status).toBe(200);
+    expect(updatedPatch.data.item.id).toBe(sourceId);
+
+    const reindexed = await waitFor(
+      () => owner.fetchJson(`/api/agents/${agentId}/knowledge`),
+      (r) => {
+        const item = r.data.items?.find((i: any) => i.id === sourceId);
+        return item?.status === 'ready' && typeof item?.rawContent === 'string' && item.rawContent.includes('UPDATED-POLICY-OMEGA-999');
+      }
+    );
+    const updatedItem = reindexed.data.items?.find((i: any) => i.id === sourceId);
+    expect(updatedItem?.status).toBe('ready');
+    expect(updatedItem?.title).toBe('Updated Compliance Policy');
+    expect(updatedItem?.sourceUrl).toBe('https://docs.example.com/updated-policy');
+    expect(updatedItem?.rawContent).toContain('UPDATED-POLICY-OMEGA-999');
+
+    // RAG chat reflects updated content, title, and url
+    const ragRes = await owner.fetchJson(`/api/agents/${agentId}/playground/chat`, {
+      method: 'POST',
+      body: { message: 'Tell me about UPDATED-POLICY-OMEGA-999', pageUrl: '/docs/policy' },
+    });
+    expect(ragRes.status).toBe(200);
+    expect(ragRes.data.citations.length).toBeGreaterThan(0);
+    expect(
+      ragRes.data.citations.some(
+        (c: any) =>
+          c.sourceId === sourceId &&
+          c.title === 'Updated Compliance Policy' &&
+          c.url === 'https://docs.example.com/updated-policy'
+      )
+    ).toBe(true);
+    expect(ragRes.data.text).toContain('UPDATED-POLICY-OMEGA-999');
+
+    // Stale token / old title must no longer appear after re-ingestion
+    const staleRes = await owner.fetchJson(`/api/agents/${agentId}/playground/chat`, {
+      method: 'POST',
+      body: { message: 'Tell me about OLD-TOKEN-ALPHA-111', pageUrl: '/docs/policy' },
+    });
+    expect(staleRes.status).toBe(200);
+    expect(staleRes.data.text).not.toContain('OLD-TOKEN-ALPHA-111');
+    expect(JSON.stringify(staleRes.data.citations)).not.toContain('OLD-TOKEN-ALPHA-111');
+    expect(JSON.stringify(staleRes.data.trace?.ragChunks ?? [])).not.toContain('OLD-TOKEN-ALPHA-111');
+    expect(staleRes.data.citations.some((c: any) => c.title === 'Initial Policy')).toBe(false);
+  });
+
+  it('(b) Localized Agent Defaults (pt), starterPrompts Persistence & Widget Config', async () => {
+    const tag = uniqueSuffix();
+    const ptOwner = createTestClient(baseUrl);
+
+    const signup = await ptOwner.fetchJson('/api/auth/signup', {
+      method: 'POST',
+      body: { name: 'PT Owner', email: `pt-owner+${tag}@example.com`, password: 'StrongPassword!2026' },
+    });
+    expect(signup.status).toBe(201);
+
+    // Omit systemPrompt and welcomeMessage completely so backend applies Portuguese templates
+    const createRes = await ptOwner.fetchJson('/api/agents', {
+      method: 'POST',
+      body: {
+        name: 'Agente PT',
+        defaultLanguage: 'pt',
+        starterPrompts: ['Quais são os planos?', 'Falar com suporte'],
+      },
+    });
+    expect(createRes.status).toBe(201);
+    const created = createRes.data.item;
+    const agentId: string = created.id;
+
+    expect(created.defaultLanguage).toBe('pt');
+    expect(typeof created.systemPrompt).toBe('string');
+    expect(created.systemPrompt.trim().length).toBeGreaterThan(0);
+    expect(created.systemPrompt).not.toContain('You are Askmink, a helpful AI sales and support agent');
+    expect(created.systemPrompt).toMatch(/você|vendas|suporte|conhecimento/i);
+    expect(typeof created.welcomeMessage).toBe('string');
+    expect(created.welcomeMessage.trim().length).toBeGreaterThan(0);
+    expect(created.welcomeMessage).not.toBe('Hi! How can I help you today?');
+    expect(created.welcomeMessage).toMatch(/olá|ajudar|como posso/i);
+    expect(created.starterPrompts).toEqual(['Quais são os planos?', 'Falar com suporte']);
+
+    // Update starterPrompts via PATCH
+    const patchRes = await ptOwner.fetchJson(`/api/agents/${agentId}`, {
+      method: 'PATCH',
+      body: { starterPrompts: ['Ver preços', 'Agendar demo'] },
+    });
+    expect(patchRes.status).toBe(200);
+    expect(patchRes.data.item.starterPrompts).toEqual(['Ver preços', 'Agendar demo']);
+
+    // Public widget config returns Portuguese welcomeMessage and updated starterPrompts
+    const widgetCfgRes = await fetch(`${baseUrl}/api/widget/${agentId}/config`, {
+      headers: { Origin: 'http://127.0.0.1:5173' },
+    });
+    expect(widgetCfgRes.status).toBe(200);
+    const widgetCfg = (await widgetCfgRes.json()) as any;
+    expect(widgetCfg.defaultLanguage).toBe('pt');
+    expect(widgetCfg.welcomeMessage).toBe(created.welcomeMessage);
+    expect(widgetCfg.starterPrompts).toEqual(['Ver preços', 'Agendar demo']);
+  });
+
+  it('(c) recommend_product Multi-Product Matching, No Blind Fallback & productId Deduplication', async () => {
+    const tag = uniqueSuffix();
+    const merchant = createTestClient(baseUrl);
+
+    const signup = await merchant.fetchJson('/api/auth/signup', {
+      method: 'POST',
+      body: { name: 'Coffee Merchant', email: `merchant+${tag}@example.com`, password: 'StrongPassword!2026' },
+    });
+    expect(signup.status).toBe(201);
+
+    const agentRes = await merchant.fetchJson('/api/agents', {
+      method: 'POST',
+      body: { name: 'Store Catalog Agent', defaultLanguage: 'pt' },
+    });
+    expect(agentRes.status).toBe(201);
+    const agentId: string = agentRes.data.item.id;
+
+    const p1 = await merchant.fetchJson(`/api/agents/${agentId}/products`, {
+      method: 'POST',
+      body: {
+        name: 'Cafeteira Expresso Pro',
+        description: 'Máquina de café espresso profissional com bomba de 15 bar',
+        priceLabel: 'R$ 1.290',
+        checkoutUrl: 'https://checkout.example.com/cafeteira',
+      },
+    });
+    const p2 = await merchant.fetchJson(`/api/agents/${agentId}/products`, {
+      method: 'POST',
+      body: {
+        name: 'Moedor de Grãos Precision',
+        description: 'Moedor elétrico cônico para moagem perfeita de grãos',
+        priceLabel: 'R$ 490',
+        checkoutUrl: 'https://checkout.example.com/moedor',
+      },
+    });
+    const p3 = await merchant.fetchJson(`/api/agents/${agentId}/products`, {
+      method: 'POST',
+      body: {
+        name: 'Kit Xícaras Térmicas',
+        description: 'Conjunto de xícaras em vidro duplo térmico para bebidas',
+        priceLabel: 'R$ 189',
+        checkoutUrl: 'https://checkout.example.com/xicaras',
+      },
+    });
+    expect(p1.status).toBe(201);
+    expect(p2.status).toBe(201);
+    expect(p3.status).toBe(201);
+
+    const cafeteiraId: string = p1.data.item.id;
+    const moedorId: string = p2.data.item.id;
+    const xicarasId: string = p3.data.item.id;
+
+    // 1. Multi-product matching query
+    const multiRes = await merchant.fetchJson(`/api/agents/${agentId}/playground/chat`, {
+      method: 'POST',
+      body: { message: 'Quero comprar Cafeteira e Moedor', pageUrl: '/pricing' },
+    });
+    expect(multiRes.status).toBe(200);
+    const multiCards = multiRes.data.cards.filter((c: any) => c.type === 'product_card');
+    const multiIds = multiCards.map((c: any) => c.productId);
+    expect(multiCards.length).toBeGreaterThanOrEqual(2);
+    expect(multiIds).toContain(cafeteiraId);
+    expect(multiIds).toContain(moedorId);
+    expect(multiIds).not.toContain(xicarasId);
+    expect(new Set(multiIds).size).toBe(multiIds.length);
+
+    // 2. Duplicate mentions of the same product still emit at most one product_card per productId
+    const dupRes = await merchant.fetchJson(`/api/agents/${agentId}/playground/chat`, {
+      method: 'POST',
+      body: { message: 'Quero comprar Cafeteira Cafeteira e ver preço da Cafeteira', pageUrl: '/pricing' },
+    });
+    expect(dupRes.status).toBe(200);
+    const dupCards = dupRes.data.cards.filter((c: any) => c.type === 'product_card');
+    const dupIds = dupCards.map((c: any) => c.productId);
+    expect(dupIds.filter((id: string) => id === cafeteiraId).length).toBe(1);
+    expect(new Set(dupIds).size).toBe(dupIds.length);
+
+    // 3. Unmatched commercial query must NOT blindly fall back to agentProducts[0]
+    const unmatchedRes = await merchant.fetchJson(`/api/agents/${agentId}/playground/chat`, {
+      method: 'POST',
+      body: { message: 'Quero comprar Submarino Atomico', pageUrl: '/pricing' },
+    });
+    expect(unmatchedRes.status).toBe(200);
+    const unmatchedCards = unmatchedRes.data.cards.filter((c: any) => c.type === 'product_card');
+    expect(unmatchedCards.length).toBe(0);
+  });
+
+  it('(d) /api/widget/:agentId/* Same-App Origin Auto-Authorization & Strict 403 External Block', async () => {
+    const tag = uniqueSuffix();
+    const corsOwner = createTestClient(baseUrl);
+
+    const signup = await corsOwner.fetchJson('/api/auth/signup', {
+      method: 'POST',
+      body: { name: 'CORS Owner', email: `cors-owner+${tag}@example.com`, password: 'StrongPassword!2026' },
+    });
+    expect(signup.status).toBe(201);
+
+    const agentRes = await corsOwner.fetchJson('/api/agents', {
+      method: 'POST',
+      body: {
+        name: 'Strict CORS Agent',
+        allowedDomains: ['https://allowed.askmink.test'],
+      },
+    });
+    expect(agentRes.status).toBe(201);
+    const agentId: string = agentRes.data.item.id;
+
+    const selfOrigin = new URL(baseUrl).origin;
+    const allowedOrigins = [
+      selfOrigin,
+      'http://127.0.0.1:3000',
+      'http://127.0.0.1:5173',
+      'http://localhost:5173',
+      'https://allowed.askmink.test',
+    ];
+
+    for (const origin of allowedOrigins) {
+      const cfgRes = await fetch(`${baseUrl}/api/widget/${agentId}/config`, {
+        headers: { Origin: origin },
+      });
+      expect(cfgRes.status).toBe(200);
+      expect(cfgRes.headers.get('access-control-allow-origin')).toBe(origin);
+      expect(cfgRes.headers.get('access-control-allow-origin')).not.toBe('*');
+
+      const preflightRes = await fetch(`${baseUrl}/api/widget/${agentId}/chat`, {
+        method: 'OPTIONS',
+        headers: {
+          Origin: origin,
+          'Access-Control-Request-Method': 'POST',
+          'Access-Control-Request-Headers': 'Content-Type',
+        },
+      });
+      expect(preflightRes.status).toBe(204);
+      expect(preflightRes.headers.get('access-control-allow-origin')).toBe(origin);
+      expect(preflightRes.headers.get('access-control-allow-origin')).not.toBe('*');
+    }
+
+    const allowedChatRes = await fetch(`${baseUrl}/api/widget/${agentId}/chat`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Origin: 'http://127.0.0.1:5173',
+      },
+      body: JSON.stringify({ message: 'Hello from local sandbox', pageUrl: '/widget-test' }),
+    });
+    expect(allowedChatRes.status).toBe(200);
+    expect(allowedChatRes.headers.get('access-control-allow-origin')).toBe('http://127.0.0.1:5173');
+
+    // Unlisted external origin must strictly fail with 403 across GET, OPTIONS, and POST
+    const blockedOrigin = 'https://evil.attacker.example';
+    const blockedCfg = await fetch(`${baseUrl}/api/widget/${agentId}/config`, {
+      headers: { Origin: blockedOrigin },
+    });
+    expect(blockedCfg.status).toBe(403);
+
+    const blockedPreflight = await fetch(`${baseUrl}/api/widget/${agentId}/chat`, {
+      method: 'OPTIONS',
+      headers: {
+        Origin: blockedOrigin,
+        'Access-Control-Request-Method': 'POST',
+      },
+    });
+    expect(blockedPreflight.status).toBe(403);
+
+    const blockedChat = await fetch(`${baseUrl}/api/widget/${agentId}/chat`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Origin: blockedOrigin,
+      },
+      body: JSON.stringify({ message: 'Blocked probe', pageUrl: '/' }),
+    });
+    expect(blockedChat.status).toBe(403);
+
+    // Separate agent omitting allowedDomains inherits default :5173 dev origins
+    const defaultAgentRes = await corsOwner.fetchJson('/api/agents', {
+      method: 'POST',
+      body: { name: 'Default CORS Agent' },
+    });
+    expect(defaultAgentRes.status).toBe(201);
+    const defaultAgentId: string = defaultAgentRes.data.item.id;
+    expect(defaultAgentRes.data.item.allowedDomains).toContain('http://127.0.0.1:5173');
+    expect(defaultAgentRes.data.item.allowedDomains).toContain('http://localhost:5173');
+
+    const defaultCfgRes = await fetch(`${baseUrl}/api/widget/${defaultAgentId}/config`, {
+      headers: { Origin: 'http://127.0.0.1:5173' },
+    });
+    expect(defaultCfgRes.status).toBe(200);
+    expect(defaultCfgRes.headers.get('access-control-allow-origin')).toBe('http://127.0.0.1:5173');
+  });
+
+  it('(e) GET /api/auth/session (200) vs GET /api/auth/me (401 when logged out)', async () => {
+    const tag = uniqueSuffix();
+    const email = `session-user+${tag}@example.com`;
+    const client = createTestClient(baseUrl);
+
+    // 1. Logged out state
+    const unauthSession = await client.fetchJson('/api/auth/session');
+    expect(unauthSession.status).toBe(200);
+    expect(unauthSession.data.authenticated).toBe(false);
+    expect(unauthSession.data.user).toBeNull();
+    expect(typeof unauthSession.data.mode).toBe('string');
+
+    const unauthMe = await client.fetchJson('/api/auth/me');
+    expect(unauthMe.status).toBe(401);
+    expect(unauthMe.data.user).toBeNull();
+
+    // 2. Authenticated state after signup
+    const signup = await client.fetchJson('/api/auth/signup', {
+      method: 'POST',
+      body: { name: 'Session User', email, password: 'StrongPassword!2026' },
+    });
+    expect(signup.status).toBe(201);
+
+    const authSession = await client.fetchJson('/api/auth/session');
+    expect(authSession.status).toBe(200);
+    expect(authSession.data.authenticated).toBe(true);
+    expect(authSession.data.user?.email).toBe(email);
+
+    const authMe = await client.fetchJson('/api/auth/me');
+    expect(authMe.status).toBe(200);
+    expect(authMe.data.user?.email).toBe(email);
+
+    // 3. Logged out again after logout
+    const logout = await client.fetchJson('/api/auth/logout', { method: 'POST' });
+    expect(logout.status).toBe(200);
+
+    const afterLogoutSession = await client.fetchJson('/api/auth/session');
+    expect(afterLogoutSession.status).toBe(200);
+    expect(afterLogoutSession.data.authenticated).toBe(false);
+    expect(afterLogoutSession.data.user).toBeNull();
+
+    const afterLogoutMe = await client.fetchJson('/api/auth/me');
+    expect(afterLogoutMe.status).toBe(401);
+    expect(afterLogoutMe.data.user).toBeNull();
+  });
+
+  it('(f) Citation Deduplication + 1-Based Index, widget.js Gzip < 30KB & Zero Unsafe HTML Sinks', async () => {
+    const tag = uniqueSuffix();
+    const citOwner = createTestClient(baseUrl);
+
+    const signup = await citOwner.fetchJson('/api/auth/signup', {
+      method: 'POST',
+      body: { name: 'Citation Owner', email: `cit-owner+${tag}@example.com`, password: 'StrongPassword!2026' },
+    });
+    expect(signup.status).toBe(201);
+
+    const agentRes = await citOwner.fetchJson('/api/agents', {
+      method: 'POST',
+      body: { name: 'Citation Dedup Agent' },
+    });
+    expect(agentRes.status).toBe(201);
+    const agentId: string = agentRes.data.item.id;
+
+    const para1 = `Section A covers MINK-DEDUP-TOKEN-7741 retention rules. ${'Enterprise audit compliance requires strict verification across regional nodes. '.repeat(9)}`.trim();
+    const para2 = `Section B covers MINK-DEDUP-TOKEN-7741 escalation rules. ${'Quarterly verification ensures deterministic indexing across customer workspaces. '.repeat(9)}`.trim();
+    const longContent = `${para1}\n\n${para2}`;
+
+    const src1Res = await citOwner.fetchJson(`/api/agents/${agentId}/knowledge/text`, {
+      method: 'POST',
+      body: {
+        title: 'Long Multi-Chunk Policy',
+        content: longContent,
+        sourceUrl: 'https://docs.example.com/multi-chunk-policy',
+      },
+    });
+    const src2Res = await citOwner.fetchJson(`/api/agents/${agentId}/knowledge/text`, {
+      method: 'POST',
+      body: {
+        title: 'Secondary Dedup Policy',
+        content: 'Secondary addendum referencing MINK-DEDUP-TOKEN-7741 governance standards for regional teams.',
+        sourceUrl: 'https://docs.example.com/secondary-policy',
+      },
+    });
+    expect(src1Res.status).toBe(201);
+    expect(src2Res.status).toBe(201);
+    const src1Id: string = src1Res.data.item.id;
+    const src2Id: string = src2Res.data.item.id;
+
+    const readySources = await waitFor(
+      () => citOwner.fetchJson(`/api/agents/${agentId}/knowledge`),
+      (r) => {
+        const s1 = r.data.items?.find((i: any) => i.id === src1Id);
+        const s2 = r.data.items?.find((i: any) => i.id === src2Id);
+        return s1?.status === 'ready' && s2?.status === 'ready';
+      }
+    );
+    const s1Ready = readySources.data.items?.find((i: any) => i.id === src1Id);
+    const s2Ready = readySources.data.items?.find((i: any) => i.id === src2Id);
+    expect(s1Ready?.status).toBe('ready');
+    expect(s2Ready?.status).toBe('ready');
+    expect(s1Ready?.chunkCount).toBeGreaterThanOrEqual(2);
+
+    const chatRes = await citOwner.fetchJson(`/api/agents/${agentId}/playground/chat`, {
+      method: 'POST',
+      body: { message: 'Explain MINK-DEDUP-TOKEN-7741 policy', pageUrl: '/docs/policy' },
+    });
+    expect(chatRes.status).toBe(200);
+    expect(chatRes.data.trace.ragChunks.length).toBeGreaterThan(chatRes.data.citations.length);
+    expect(chatRes.data.citations.length).toBe(2);
+    const citedSourceIds = chatRes.data.citations.map((c: any) => c.sourceId);
+    expect(new Set(citedSourceIds).size).toBe(chatRes.data.citations.length);
+    expect(chatRes.data.citations.map((c: any) => c.index)).toEqual(
+      chatRes.data.citations.map((_: any, i: number) => i + 1)
+    );
+
+    // 2. widget.js gzipped bundle size strictly < 30 KB
+    const testDir = path.dirname(fileURLToPath(import.meta.url));
+    const widgetPath = path.resolve(testDir, '../../../widget/dist/widget.js');
+    expect(fs.existsSync(widgetPath)).toBe(true);
+    const gzipped = zlib.gzipSync(fs.readFileSync(widgetPath));
+    expect(gzipped.byteLength).toBeLessThan(30 * 1024);
+
+    // 3. Zero unsafe HTML sinks across apps/web/src and apps/widget/src
+    const webSrcDir = path.resolve(testDir, '../../../web/src');
+    const widgetSrcDir = path.resolve(testDir, '../../../widget/src');
+    const allSrcFiles = [...collectSourceFiles(webSrcDir), ...collectSourceFiles(widgetSrcDir)];
+    expect(allSrcFiles.length).toBeGreaterThan(0);
+
+    const unsafePattern = /(dangerouslySetInnerHTML|innerHTML|outerHTML|insertAdjacentHTML)/;
+    const violations: string[] = [];
+    for (const filePath of allSrcFiles) {
+      const content = fs.readFileSync(filePath, 'utf8');
+      if (unsafePattern.test(content)) {
+        violations.push(path.relative(path.resolve(testDir, '../../..'), filePath));
+      }
+    }
+    expect(violations).toEqual([]);
+  });
+
+  it('(g) book_meeting AI Tool Returns BOOKING_CONFLICT Instead of Aborting Chat Turn with 400', async () => {
+    const tag = uniqueSuffix();
+    const conflictOwner = createTestClient(baseUrl);
+
+    const signup = await conflictOwner.fetchJson('/api/auth/signup', {
+      method: 'POST',
+      body: {
+        name: 'Conflict Owner',
+        email: `conflict-owner+${tag}@example.com`,
+        password: 'StrongPassword!2026',
+      },
+    });
+    expect(signup.status).toBe(201);
+
+    const agentRes = await conflictOwner.fetchJson('/api/agents', {
+      method: 'POST',
+      body: {
+        name: 'Booking Conflict Agent',
+        defaultLanguage: 'en',
+        allowedDomains: ['http://127.0.0.1:5173'],
+      },
+    });
+    expect(agentRes.status).toBe(201);
+    const agentId: string = agentRes.data.item.id;
+
+    // Pre-book a future 30-minute UTC slot
+    const slotStart = new Date(Date.now() + 48 * 60 * 60 * 1000);
+    slotStart.setUTCHours(15, 0, 0, 0);
+    const slotEnd = new Date(slotStart.getTime() + 30 * 60 * 1000);
+
+    const preBookRes = await fetch(`${baseUrl}/api/widget/${agentId}/bookings`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Origin: 'http://127.0.0.1:5173',
+      },
+      body: JSON.stringify({
+        visitorName: 'First Booker',
+        visitorEmail: 'first@example.com',
+        startsAt: slotStart.toISOString(),
+        endsAt: slotEnd.toISOString(),
+        timezone: 'UTC',
+      }),
+    });
+    expect(preBookRes.status).toBe(201);
+
+    let llmCallCount = 0;
+    let toolResultSeen: any = null;
+
+    const mockLlmServer = http.createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on('data', (c) => chunks.push(c));
+      req.on('end', () => {
+        const rawBody = Buffer.concat(chunks).toString('utf8');
+        if (req.method === 'POST' && req.url?.endsWith('/chat/completions')) {
+          llmCallCount++;
+          const payload = JSON.parse(rawBody || '{}');
+          if (llmCallCount === 1) {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(
+              JSON.stringify({
+                id: 'chatcmpl-conflict-step-1',
+                object: 'chat.completion',
+                created: Math.floor(Date.now() / 1000),
+                model: 'mock-gpt-conflict',
+                choices: [
+                  {
+                    index: 0,
+                    message: {
+                      role: 'assistant',
+                      content: null,
+                      tool_calls: [
+                        {
+                          id: 'call_book_conflict_1',
+                          type: 'function',
+                          function: {
+                            name: 'book_meeting',
+                            arguments: JSON.stringify({
+                              visitorName: 'Second Visitor',
+                              visitorEmail: 'second@example.com',
+                              startsAt: slotStart.toISOString(),
+                              endsAt: slotEnd.toISOString(),
+                            }),
+                          },
+                        },
+                      ],
+                    },
+                    finish_reason: 'tool_calls',
+                  },
+                ],
+                usage: { prompt_tokens: 20, completion_tokens: 15, total_tokens: 35 },
+              })
+            );
+            return;
+          }
+
+          const toolMsg = Array.isArray(payload.messages)
+            ? [...payload.messages].reverse().find((m: any) => m.role === 'tool')
+            : null;
+          if (toolMsg?.content) {
+            try {
+              toolResultSeen = JSON.parse(
+                typeof toolMsg.content === 'string' ? toolMsg.content : JSON.stringify(toolMsg.content)
+              );
+            } catch {
+              toolResultSeen = toolMsg.content;
+            }
+          }
+
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              id: 'chatcmpl-conflict-step-2',
+              object: 'chat.completion',
+              created: Math.floor(Date.now() / 1000),
+              model: 'mock-gpt-conflict',
+              choices: [
+                {
+                  index: 0,
+                  message: {
+                    role: 'assistant',
+                    content: 'That time slot is already booked. Please pick another available slot.',
+                  },
+                  finish_reason: 'stop',
+                },
+              ],
+              usage: { prompt_tokens: 40, completion_tokens: 15, total_tokens: 55 },
+            })
+          );
+          return;
+        }
+        res.writeHead(404);
+        res.end();
+      });
+    });
+
+    await new Promise<void>((resolve) => mockLlmServer.listen(0, '127.0.0.1', resolve));
+    try {
+      const llmAddr = mockLlmServer.address() as { port: number };
+      const mockLlmBaseUrl = `http://127.0.0.1:${llmAddr.port}/v1`;
+
+      const keyRes = await conflictOwner.fetchJson('/api/provider-keys', {
+        method: 'POST',
+        body: {
+          provider: 'openai-compatible',
+          purpose: 'chat',
+          label: 'Mock Conflict LLM',
+          apiKey: 'sk-test-conflict-1234',
+          baseUrl: mockLlmBaseUrl,
+          defaultModel: 'mock-gpt-conflict',
+          activate: true,
+        },
+      });
+      expect(keyRes.status).toBe(201);
+
+      const chatRes = await fetch(`${baseUrl}/api/widget/${agentId}/chat`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Origin: 'http://127.0.0.1:5173',
+        },
+        body: JSON.stringify({
+          message: 'Please book the 15:00 slot tomorrow',
+          pageUrl: '/',
+        }),
+      });
+      expect(chatRes.status).toBe(200);
+      const chatData = (await chatRes.json()) as any;
+      expect(llmCallCount).toBe(2);
+      expect(toolResultSeen).toMatchObject({
+        ok: false,
+        code: 'BOOKING_CONFLICT',
+      });
+      expect(typeof toolResultSeen?.error).toBe('string');
+      expect(chatData.text).toContain('already booked');
+      expect(chatData.cards.some((c: any) => c.type === 'booking_confirmed')).toBe(false);
+    } finally {
+      await new Promise<void>((resolve) => mockLlmServer.close(() => resolve()));
+    }
+  });
+
   it('Live Vercel AI Gateway Smoke Test (runs when AI_GATEWAY_API_KEY is configured in .env)', async () => {
     const liveConfig = loadConfig();
     if (!liveConfig.aiGatewayApiKey) {
@@ -802,7 +1493,7 @@ describe('Askmink MVP E2E Suite (Real PostgreSQL 18 + pgvector + pg-boss + Hono)
       const reply = await generateText({
         model: chatModel,
         prompt: 'Reply with exactly one word: OK',
-        maxTokens: 16,
+        maxTokens: 512,
       });
       expect(reply.text.trim().length).toBeGreaterThan(0);
     } catch (err) {

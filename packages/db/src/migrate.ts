@@ -75,8 +75,8 @@ CREATE TABLE IF NOT EXISTS agents (
   default_language TEXT NOT NULL DEFAULT 'en',
   system_prompt TEXT NOT NULL,
   welcome_message TEXT NOT NULL DEFAULT 'Hi! How can I help you today?',
+  starter_prompts JSONB NOT NULL DEFAULT '[]'::jsonb,
   allowed_domains JSONB NOT NULL DEFAULT '[]'::jsonb,
-  url_rules JSONB NOT NULL DEFAULT '[]'::jsonb,
   widget_jwt_secret_encrypted TEXT NOT NULL,
   chat_provider_key_id UUID REFERENCES provider_keys(id) ON DELETE SET NULL,
   chat_model TEXT NOT NULL DEFAULT 'tencent/hy4-flash',
@@ -90,6 +90,9 @@ CREATE TABLE IF NOT EXISTS agents (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_agents_workspace ON agents(workspace_id);
+
+ALTER TABLE agents
+  ADD COLUMN IF NOT EXISTS starter_prompts JSONB NOT NULL DEFAULT '[]'::jsonb;
 
 -- Backfill workspace-level global BYOK key/model settings from legacy per-agent columns (idempotent)
 DO $$
@@ -247,7 +250,6 @@ CREATE TABLE IF NOT EXISTS conversations (
   id UUID PRIMARY KEY DEFAULT uuidv7(),
   workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
   agent_id UUID NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
-  mode TEXT NOT NULL DEFAULT 'sales',
   status TEXT NOT NULL DEFAULT 'resolved_ai',
   language TEXT NOT NULL DEFAULT 'en',
   page_url TEXT NOT NULL DEFAULT '/',
@@ -307,7 +309,6 @@ CREATE TABLE IF NOT EXISTS execution_traces (
   agent_id UUID NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
   conversation_id UUID NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
   message_id UUID REFERENCES messages(id) ON DELETE SET NULL,
-  mode TEXT NOT NULL,
   model TEXT NOT NULL,
   rag_chunks JSONB NOT NULL DEFAULT '[]'::jsonb,
   tool_calls JSONB NOT NULL DEFAULT '[]'::jsonb,
@@ -368,6 +369,10 @@ CREATE TABLE IF NOT EXISTS usage_events (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_usage_events_agent_created ON usage_events(agent_id, created_at);
+
+ALTER TABLE agents DROP COLUMN IF EXISTS url_rules;
+ALTER TABLE conversations DROP COLUMN IF EXISTS mode;
+ALTER TABLE execution_traces DROP COLUMN IF EXISTS mode;
 `;
 
 export async function runMigrations(pool: Pool): Promise<void> {
